@@ -494,6 +494,7 @@ int main(int argc, char *argv[])
      * START was unused (SELECT is poweroff, L1/R1 are themes, TRIANGLE is
      * favorite, CROSS launches, D-pad navigates). */
     int overlayVisible = 0;
+    int debugLoggingOn = 0; /* mc0:/launcher.log disk flush - off by default, toggled with SQUARE on the overlay */
 
     /* M11: disc status/RTC are polled roughly once a second, not every
      * frame - both go over SIF RPC to the IOP, and a status line that's
@@ -587,12 +588,19 @@ int main(int argc, char *argv[])
         u32 edge = pressed & ~prevPressed;
         prevPressed = pressed;
 
-        if (edge & PAD_START) {
+        if (edge & PAD_START)
             overlayVisible = !overlayVisible;
-            /* Sticky - opening the overlay once starts flushing the log
-             * to disk for the rest of the session (see log.c), even if
-             * closed again right after. */
-            logSetDebugEnabled(1);
+
+        /* SQUARE explicitly toggles the mc0:/launcher.log disk flush
+         * on/off (see log.c) - only live while the overlay is showing,
+         * so it can't be toggled by accident during normal navigation.
+         * Deliberately separate from just viewing the overlay: opening
+         * it to glance at recent events shouldn't itself start writing
+         * to MC on every device probe/launch, per the user's own call
+         * that those are two different decisions. */
+        if (overlayVisible && (edge & PAD_SQUARE)) {
+            debugLoggingOn = !debugLoggingOn;
+            logSetDebugEnabled(debugLoggingOn);
         }
 
         /* M11: SELECT is a real, immediate system poweroff - not
@@ -815,14 +823,19 @@ int main(int argc, char *argv[])
             gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
 
             if (fontOk) {
+                char header[48];
+                sprintf(header, "[SQUARE] disk logging: %s", debugLoggingOn ? "ON" : "OFF");
+                bitmapFontPrint(gsGlobal, &font, marginX + 4.0f, marginY + 4.0f,
+                                GS_SETREG_RGBAQ(0xFF, 0xE0, 0x80, 0x80, 0x00), header);
+
                 int n = logLineCount();
-                int maxRows = (int)((safeBottom - marginY) / 16.0f) - 1;
+                int maxRows = (int)((safeBottom - marginY) / 16.0f) - 2;
                 int startIdx = (n > maxRows) ? n - maxRows : 0;
                 int row = 0;
                 while (startIdx + row < n) {
                     const char *line = logLine(startIdx + row);
                     if (line)
-                        bitmapFontPrint(gsGlobal, &font, marginX + 4.0f, marginY + 4.0f + row * 16.0f,
+                        bitmapFontPrint(gsGlobal, &font, marginX + 4.0f, marginY + 4.0f + (row + 1) * 16.0f,
                                          GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00), line);
                     row++;
                 }

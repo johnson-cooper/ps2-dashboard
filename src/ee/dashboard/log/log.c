@@ -29,10 +29,10 @@ void logInit(void)
  * *disk write* is gated. Most launches/boots are ordinary use, not a
  * debugging session, and writing to MC on every single device probe and
  * launch attempt for a log nobody's looking at is real, avoidable MC
- * wear (same reasoning already applied to metadata writes in M9). Sticky
- * once set - opening the overlay once starts logging to disk for the
- * rest of the session, even if it's closed again right after, so a
- * crash shortly after checking it once still gets captured. */
+ * wear (same reasoning already applied to metadata writes in M9). An
+ * explicit toggle, not tied to the overlay's own visibility - main.c
+ * wires this to its own separate button, so opening the overlay to look
+ * at recent events doesn't itself start writing to disk. */
 void logSetDebugEnabled(int enabled)
 {
     debugEnabled = enabled;

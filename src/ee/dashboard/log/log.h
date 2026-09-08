@@ -17,9 +17,10 @@ void logInit(void);
  * is always kept current) - off by default, since most launches are
  * ordinary use, not a debugging session, and writing to MC on every
  * device probe/launch attempt for a log nobody's checking is avoidable
- * MC wear. Sticky: pass 1 once (e.g. the first time the debug overlay is
- * opened) to start flushing to disk for the rest of the session, even if
- * later disabled/closed again. */
+ * MC wear. An explicit on/off toggle (main.c: SQUARE, while the debug
+ * overlay is showing) - deliberately not tied to just opening the
+ * overlay to look at recent events, which is a different decision from
+ * "start writing this to disk every launch from now on". */
 void logSetDebugEnabled(int enabled);
 
 /* Appends one line (printf-style, truncated to fit) to the in-memory
