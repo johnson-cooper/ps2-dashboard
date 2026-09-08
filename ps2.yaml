@@ -3,9 +3,9 @@ project: ps2launcher
 targets:
   - name: dashboard
     type: ee
-    sources: [src/ee/dashboard/main.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/log/log.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c]
+    sources: [src/ee/dashboard/main.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/log/log.c, src/ee/dashboard/audio/audio.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c, src/ee/dashboard/embedded/sfx_blip_pcm.c, src/ee/dashboard/embedded/music_adpcm.c]
     headers: [common]
-    libs: [filexio, gskit, dmakit, pad, png, z, poweroff, cdvd, netman, ps2ips]
+    libs: [filexio, gskit, dmakit, pad, png, z, poweroff, cdvd, netman, ps2ips, audsrv]
     pack: true
 
   - name: target

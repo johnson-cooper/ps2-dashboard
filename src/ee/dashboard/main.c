@@ -20,6 +20,7 @@
 #include "config/metadata.h"
 #include "theme/theme.h"
 #include "log/log.h"
+#include "audio/audio.h"
 
 /* M10: two embedded themes (colors + an optional background image),
  * deployed onto mc0: at boot the same way target.elf/stage2.elf already
@@ -373,6 +374,13 @@ int main(int argc, char *argv[])
     SifLoadModule("host:modules/poweroff.irx", 0, NULL);
     poweroffInit();
 
+    /* M14: optional sound - a failure anywhere in here (module load,
+     * audsrv_init, format config) just leaves audioPlayBlip() a silent
+     * no-op for the rest of the session, never something that blocks or
+     * degrades the rest of the dashboard boot. */
+    audioInit();
+    audioPlayMusic();
+
     /* Device manager: lazily load + probe every family once at boot (M6's
      * scoping note still applies - only-load-on-navigation belongs to a
      * later UI-driven refresh, once there's more than one screen to
@@ -528,6 +536,8 @@ int main(int argc, char *argv[])
     int rescanFrameCounter = 0;
 
     while (1) {
+        audioTick();
+
         if (rescanFrameCounter == 0) {
             int changed = 0;
             for (i = 0; i < familyCount; i++) {
@@ -622,6 +632,7 @@ int main(int argc, char *argv[])
         Theme *theme = &themes[currentTheme];
 
         if (entryCount > 0) {
+            int prevFocus = focus;
             if (edge & PAD_RIGHT)
                 focus = (focus + 1) % entryCount;
             if (edge & PAD_LEFT)
@@ -636,6 +647,12 @@ int main(int argc, char *argv[])
                 if (n >= 0)
                     focus = n;
             }
+            /* M14: a menu blip only when focus actually moved - this
+             * naturally stays silent at grid boundaries where UP/DOWN
+             * don't move focus (no `n < entryCount`/`n >= 0`), while
+             * LEFT/RIGHT's wraparound still counts as a real move. */
+            if (focus != prevFocus)
+                audioPlayBlip();
             if (edge & PAD_TRIANGLE) {
                 metas[focus].favorite = !metas[focus].favorite;
                 metadataSave(entries[focus].path, &metas[focus]);
