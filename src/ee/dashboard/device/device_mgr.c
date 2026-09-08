@@ -190,6 +190,20 @@ static int probeHDD(DeviceFamily *self)
  * (ps2ip-nm.irx) was actually a THIRD, mismatched combination, paired
  * with netman+smap from the first architecture - fixed here. */
 
+/* Confirmed via a live PCSX2 debugger session with real ethernet/HDD
+ * enabled (M12 follow-up): loadDev9()/netman.irx/smap.irx all succeed
+ * (real module IDs returned), but ps2ips.irx itself fails to load with
+ * -200, an IOP-side generic module-load rejection - not a missing file
+ * (verified present and correctly deployed at every path). By this point
+ * in boot, 15 other IOP modules are already resident (SIO2MAN, PADMAN,
+ * iomanX, fileXio, poweroff, mcman, mcserv, usbd, usbhdfsd, cdvdman,
+ * cdvdfsv, ps2dev9, ps2atad, netman, smap) inside the IOP's small 2MB
+ * RAM - IOP memory exhaustion is the leading hypothesis, though
+ * confirming it would mean reordering module loading project-wide
+ * (surgery affecting every device family, not just this one) - left as
+ * a documented, real, known limitation rather than risking already-
+ * working families for an unconfirmed theory. See the plan document's
+ * M12 section for the full writeup. */
 static int loadNetwork(DeviceFamily *self)
 {
     (void)self;
