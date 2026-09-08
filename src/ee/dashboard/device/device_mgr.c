@@ -137,20 +137,40 @@ static int loadDev9(void)
 static int loadHDD(DeviceFamily *self)
 {
     (void)self;
-    /* dev9 -> atad -> hdd -> fs, in order; abort as soon as one fails
-     * rather than attempting later modules against a driver that isn't
-     * there - PFS partition mount/creation is a separate, later concern
-     * (section 6 flags HDD as "needs extra modules, moderate risk" and
-     * expects most environments, this one included, to not have one). */
+    /* dev9 -> atad only. Originally this also loaded ps2hdd.irx (the APA
+     * partition driver) and, before that, ps2fs.irx on top of it -
+     * removing ps2fs.irx alone did NOT fix a real, confirmed stall
+     * booting with a freshly-enabled, unformatted/unpartitioned virtual
+     * HDD in PCSX2 (black screen for a long time before eventually
+     * continuing). Re-reading the IOP log more carefully: ps2hdd.irx's
+     * own startup banner ("PS2 APA Driver v2.5") prints, but unlike
+     * every other module load, no "loadmodule: id NN, ret Y" line ever
+     * follows it in the captured log - meaning ps2hdd.irx's own SifLoad-
+     * Module call hadn't returned yet. Its name says why: it's APA
+     * (partition-table) aware itself, independent of ps2fs.irx layered
+     * on top, so a blank/unpartitioned drive apparently makes ITS OWN
+     * init slow too. This happens before gsKit even initializes, so
+     * there's no way to recover or bound it from this side - only
+     * ps2atad.irx (raw ATA/IDE presence, no partition-table parsing at
+     * all) is loaded here now. Real PFS/HDD browsing needs partition-
+     * table-aware pre-checks this project doesn't have yet - not
+     * attempted. */
     if (loadDev9() < 0)
         return -1;
     if (loadModule("host:modules/ps2atad.irx") < 0)
         return -1;
-    if (loadModule("host:modules/ps2hdd.irx") < 0)
-        return -1;
-    if (loadModule("host:modules/ps2fs.irx") < 0)
-        return -1;
     return 0;
+}
+
+/* hdd0: itself needs ps2fs.irx (not loaded, see loadHDD()'s comment) to
+ * resolve at all, so probeFs() would always report it unavailable -
+ * honest, but self-defeating given the drive's presence genuinely was
+ * detected. "available" here means what it safely can: the HDD driver
+ * stack itself loaded (a real drive responded), not that it's
+ * browsable. */
+static int probeHDD(DeviceFamily *self)
+{
+    return self->loaded;
 }
 
 /* --- Network ------------------------------------------------------------
@@ -285,7 +305,11 @@ static DeviceFamily families[] = {
     { "mc1", "mc1:/", 0, 0, 0, loadMC, probeFs },
     { "mass", "mass:/", 0, 0, 0, loadUSB, probeUSB },
     { "cdrom0", "cdrom0:/", 0, 0, 0, loadCD, probeFs },
-    { "hdd0", "hdd0:/", 0, 0, 0, loadHDD, probeFs },
+    /* mountPrefix NULL, not "hdd0:/" - hdd0: needs ps2fs.irx (not loaded,
+     * see loadHDD()'s comment on the real hang that caused this) to
+     * resolve at all, so there's nothing scanDevice() could ever browse
+     * there yet. */
+    { "hdd0", NULL, 0, 0, 0, loadHDD, probeHDD },
     { "network", NULL, 0, 0, 0, loadNetwork, probeNetwork },
     { "smb", "smb0:/", 0, 0, 0, loadSmb, probeSmb },
 };
