@@ -1,4 +1,5 @@
 #include "metadata.h"
+#include "../log/log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,8 +79,10 @@ void metadataLoad(const char *elfPath, AppMetadata *out)
     unsigned int storedCrc = (unsigned int)strtoul(crcLine + 6, NULL, 16);
     int dataLen = (int)(crcLine - content);
     unsigned int actualCrc = crc32((const unsigned char *)content, dataLen);
-    if (storedCrc != actualCrc)
+    if (storedCrc != actualCrc) {
+        logMsg("metadata corrupt: %s", elfPath);
         return;
+    }
 
     /* Simple line-by-line key=value scan over the verified region. */
     char verified[METADATA_MAX_CONTENT];

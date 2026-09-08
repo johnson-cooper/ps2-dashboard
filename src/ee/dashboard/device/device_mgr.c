@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "smbman.h"
+#include "../log/log.h"
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
@@ -314,18 +315,25 @@ static int probeSmb(DeviceFamily *self)
     return 1;
 }
 
+/* quickProbe is NULL for hdd0/network/smb - none are physically
+ * "removable" mid-session the way MC/USB/disc media are, and their real
+ * probe()s are multi-second retry/login sequences unsuitable for a
+ * recheck run every few seconds (see device_mgr.h's comment). mc0/mc1/
+ * cdrom0 reuse probeFs directly (already a single, cheap call); mass
+ * gets probeFs too, specifically bypassing probeUSB's boot-only
+ * enumeration-wait retry loop. */
 static DeviceFamily families[] = {
-    { "mc0", "mc0:/", 0, 0, 0, loadMC, probeFs },
-    { "mc1", "mc1:/", 0, 0, 0, loadMC, probeFs },
-    { "mass", "mass:/", 0, 0, 0, loadUSB, probeUSB },
-    { "cdrom0", "cdrom0:/", 0, 0, 0, loadCD, probeFs },
+    { "mc0", "mc0:/", 0, 0, 0, loadMC, probeFs, probeFs },
+    { "mc1", "mc1:/", 0, 0, 0, loadMC, probeFs, probeFs },
+    { "mass", "mass:/", 0, 0, 0, loadUSB, probeUSB, probeFs },
+    { "cdrom0", "cdrom0:/", 0, 0, 0, loadCD, probeFs, probeFs },
     /* mountPrefix NULL, not "hdd0:/" - hdd0: needs ps2fs.irx (not loaded,
      * see loadHDD()'s comment on the real hang that caused this) to
      * resolve at all, so there's nothing scanDevice() could ever browse
      * there yet. */
-    { "hdd0", NULL, 0, 0, 0, loadHDD, probeHDD },
-    { "network", NULL, 0, 0, 0, loadNetwork, probeNetwork },
-    { "smb", "smb0:/", 0, 0, 0, loadSmb, probeSmb },
+    { "hdd0", NULL, 0, 0, 0, loadHDD, probeHDD, NULL },
+    { "network", NULL, 0, 0, 0, loadNetwork, probeNetwork, NULL },
+    { "smb", "smb0:/", 0, 0, 0, loadSmb, probeSmb, NULL },
 };
 
 DeviceFamily *deviceMgrGetFamilies(int *count)
@@ -339,7 +347,21 @@ void deviceMgrRefresh(DeviceFamily *family)
     if (!family->attempted) {
         family->attempted = 1;
         family->loaded = (family->loadModules(family) == 0);
+        if (!family->loaded)
+            logMsg("device %s: module load failed", family->name);
     }
 
     family->available = family->loaded && family->probe(family);
+    logMsg("device %s: %s", family->name, family->available ? "available" : "unavailable");
+}
+
+void deviceMgrQuickRescan(DeviceFamily *family)
+{
+    if (!family->quickProbe || !family->loaded)
+        return;
+
+    int wasAvailable = family->available;
+    family->available = family->quickProbe(family);
+    if (family->available != wasAvailable)
+        logMsg("device %s: %s (rescan)", family->name, family->available ? "available" : "unavailable");
 }

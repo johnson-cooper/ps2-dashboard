@@ -19,6 +19,7 @@
 #include "gfx/bitmap_font.h"
 #include "config/metadata.h"
 #include "theme/theme.h"
+#include "log/log.h"
 
 /* M10: two embedded themes (colors + an optional background image),
  * deployed onto mc0: at boot the same way target.elf/stage2.elf already
@@ -302,6 +303,55 @@ static void ensureDir(const char *path)
     fileXioMkdir(path, 0777);
 }
 
+/* M13 (plan section 11, "removed storage mid-browse"): rebuilds entries[]
+ * from scratch against the families' *current* available state - shared
+ * by the boot-time scan and the periodic mid-session rescan below, so a
+ * device pulled or reinserted after boot is actually reflected in the
+ * browsable grid, not just safely failing if launched (which was already
+ * true before this, just not proactive). Assumes stage2.elf/target.elf
+ * are already on mc0: (main() writes them before ever calling this) -
+ * the entryCount==0 fallback path below depends on target.elf actually
+ * existing by this point. */
+static void rescanEntries(DeviceFamily *families, int familyCount)
+{
+    entryCount = 0;
+
+    int i;
+    for (i = 0; i < familyCount; i++) {
+        if (families[i].mountPrefix && families[i].available)
+            scanDevice(families[i].mountPrefix);
+    }
+
+    /* A real game disc, if one's mounted, needs its own discovery path
+     * (see parseDiscBootPath()'s header comment) rather than the
+     * extension-based scan above, which will never find anything on
+     * commercial disc media. */
+    for (i = 0; i < familyCount; i++) {
+        if (strcmp(families[i].name, "cdrom0") == 0 && families[i].available) {
+            if (entryCount < MAX_ENTRIES && parseDiscBootPath(entries[entryCount].path, sizeof(entries[0].path)) == 0)
+                entryCount++;
+            break;
+        }
+    }
+
+    /* Fallback so the browser always has something to show and launch
+     * on a fresh memory card with no homebrew on it yet. */
+    if (entryCount == 0) {
+        const char *fallback = "mc0:/target.elf";
+        char *dst = entries[0].path;
+        while (*fallback)
+            *dst++ = *fallback++;
+        *dst = '\0';
+        entryCount = 1;
+    }
+
+    /* M9: per-app metadata (launch count, favorite) - one small sibling
+     * .cfg file per entry (config/metadata.c). Missing or corrupt files
+     * both degrade to all-zero defaults, so this never blocks the scan. */
+    for (i = 0; i < entryCount; i++)
+        metadataLoad(entries[i].path, &metas[i]);
+}
+
 int main(int argc, char *argv[])
 {
     SifInitRpc(0);
@@ -312,6 +362,9 @@ int main(int argc, char *argv[])
     SifLoadModule("host:modules/fileXio.irx", 0, NULL);
     fileXioInit();
     fileXioSetRWBufferSize(128 * 1024);
+
+    logInit();
+    logMsg("boot: dashboard starting");
 
     /* M11: poweroff is its own always-loaded system service, not tied to
      * a device family - unlike cdvdman.irx (loaded lazily by the
@@ -330,23 +383,6 @@ int main(int argc, char *argv[])
     for (i = 0; i < familyCount; i++)
         deviceMgrRefresh(&families[i]);
 
-    for (i = 0; i < familyCount; i++) {
-        if (families[i].mountPrefix && families[i].available)
-            scanDevice(families[i].mountPrefix);
-    }
-
-    /* A real game disc, if one's mounted, needs its own discovery path
-     * (see parseDiscBootPath()'s header comment) rather than the
-     * extension-based scan above, which will never find anything on
-     * commercial disc media. */
-    for (i = 0; i < familyCount; i++) {
-        if (strcmp(families[i].name, "cdrom0") == 0 && families[i].available) {
-            if (entryCount < MAX_ENTRIES && parseDiscBootPath(entries[entryCount].path, sizeof(entries[0].path)) == 0)
-                entryCount++;
-            break;
-        }
-    }
-
     /* stage2 is deployed unconditionally - every launch chains through it
      * regardless of which device the target itself lives on. Likewise,
      * always refresh target.elf's on-disk bytes to match this build:
@@ -354,8 +390,8 @@ int main(int argc, char *argv[])
      * homebrew), so keeping it in sync every boot is the right call for
      * testing, even though a real dashboard should never silently
      * overwrite a user's actual app files. Refreshing the bytes is kept
-     * separate from registering it as a browsable entry (below) - if the
-     * scan above already found it, don't add it twice. */
+     * separate from registering it as a browsable entry - rescanEntries()
+     * below finds it as a normal scanned entry once it's actually there. */
     writeFile("mc0:/stage2.elf", stage2_elf, size_stage2_elf);
     writeFile("mc0:/target.elf", target_elf, size_target_elf);
 
@@ -376,25 +412,7 @@ int main(int argc, char *argv[])
     writeFile("mc0:/theme_dark/theme.cfg", theme_dark_cfg, size_theme_dark_cfg);
     writeFile("mc0:/theme_sunset/theme.cfg", theme_sunset_cfg, size_theme_sunset_cfg);
 
-    /* Fallback so the browser always has something to show and launch
-     * on a fresh memory card with no homebrew on it yet, in the (now
-     * unlikely, since target.elf is always written above) case the scan
-     * didn't already pick it up. */
-    if (entryCount == 0) {
-        const char *fallback = "mc0:/target.elf";
-        char *dst = entries[0].path;
-        while (*fallback)
-            *dst++ = *fallback++;
-        *dst = '\0';
-        entryCount = 1;
-    }
-
-    /* M9: per-app metadata (launch count, favorite) - one small sibling
-     * .cfg file per entry (config/metadata.c), loaded once at boot right
-     * alongside the entries it describes. Missing or corrupt files both
-     * degrade to all-zero defaults, so this never blocks the scan. */
-    for (i = 0; i < entryCount; i++)
-        metadataLoad(entries[i].path, &metas[i]);
+    rescanEntries(families, familyCount);
 
     /* gsKit_init_global() auto-detects Mode/Interlace/Field/Width/Height -
      * confirmed working as-is since M1/M2, don't override. */
@@ -408,8 +426,18 @@ int main(int argc, char *argv[])
     gsKit_init_screen(gsGlobal);
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
 
+    /* M13: bitmapFontInit() can fail (VRAM exhaustion, allocation
+     * failure) - previously discarded entirely, so a failure here would
+     * have left every later bitmapFontPrint() call drawing through an
+     * uninitialized/zeroed BitmapFont (a texture with Vram=0, aliasing
+     * the framebuffer). fontOk gates every text draw below so a failure
+     * degrades to a text-free but otherwise fully functional UI (tiles,
+     * launching, navigation all still work) instead of corrupting the
+     * framebuffer. */
     BitmapFont font;
-    bitmapFontInit(&font, gsGlobal);
+    int fontOk = (bitmapFontInit(&font, gsGlobal) == 0);
+    if (!fontOk)
+        logMsg("font init failed, running text-free");
 
     /* M10: load both bundled themes once at boot (not per-switch) - a
      * theme's background texture, if any, is decoded and uploaded to
@@ -419,10 +447,14 @@ int main(int argc, char *argv[])
      * eventually exhaust the 4MB budget measured in M7). If a theme
      * fails to load (missing/corrupt files), it keeps a safe all-zero
      * struct - drawing with black tiles/labels rather than crashing. */
-    if (themeLoad("mc0:/theme_dark/", &themes[0], gsGlobal) < 0)
+    if (themeLoad("mc0:/theme_dark/", &themes[0], gsGlobal) < 0) {
         themeSetFallback(&themes[0]);
-    if (themeLoad("mc0:/theme_sunset/", &themes[1], gsGlobal) < 0)
+        logMsg("theme load failed: dark, using fallback colors");
+    }
+    if (themeLoad("mc0:/theme_sunset/", &themes[1], gsGlobal) < 0) {
         themeSetFallback(&themes[1]);
+        logMsg("theme load failed: sunset, using fallback colors");
+    }
 
     static char padBuf[256] __attribute__((aligned(64)));
     padInit(0);
@@ -458,6 +490,11 @@ int main(int argc, char *argv[])
     int focus = 0;
     u32 prevPressed = 0;
 
+    /* M13 (plan section 11's own explicit task, "logging/debug overlay") -
+     * START was unused (SELECT is poweroff, L1/R1 are themes, TRIANGLE is
+     * favorite, CROSS launches, D-pad navigates). */
+    int overlayVisible = 0;
+
     /* M11: disc status/RTC are polled roughly once a second, not every
      * frame - both go over SIF RPC to the IOP, and a status line that's
      * a second stale is unnoticeable while sixty extra RPC round-trips a
@@ -468,7 +505,44 @@ int main(int argc, char *argv[])
     static char statusLine[64] __attribute__((aligned(64)));
     statusLine[0] = '\0';
 
+    /* M13 (plan section 11): both of these were previously silent - a
+     * failed launch (bad ELF, or its device removed since the boot-time
+     * scan) or a disconnected controller left the UI looking frozen,
+     * indistinguishable from an actual hang. Both reuse the status
+     * line's existing render slot rather than adding a new one -
+     * disconnect takes priority over a launch-failure message, since
+     * it's the more pressing state and also because a disconnected pad
+     * can't be the one that just triggered a launch attempt anyway. */
+    char overrideMsg[64];
+    int launchFailedFramesLeft = 0;
+    int disconnectFrames = 0;
+
+    /* M13 (plan section 11, "removed storage mid-browse"): a lightweight
+     * recheck of removable-media families every ~3 seconds (180 frames) -
+     * long enough to be cheap (this is a real IOP RPC per family, not
+     * free), short enough that pulling a USB stick or swapping a disc
+     * gets reflected in the browsable grid without needing to wait long
+     * or trigger it by trying to launch something. Only families with a
+     * quickProbe are ever rechecked - see device_mgr.h. */
+    int rescanFrameCounter = 0;
+
     while (1) {
+        if (rescanFrameCounter == 0) {
+            int changed = 0;
+            for (i = 0; i < familyCount; i++) {
+                int wasAvailable = families[i].available;
+                deviceMgrQuickRescan(&families[i]);
+                if (families[i].available != wasAvailable)
+                    changed = 1;
+            }
+            if (changed) {
+                rescanEntries(families, familyCount);
+                if (focus >= entryCount)
+                    focus = (entryCount > 0) ? entryCount - 1 : 0;
+            }
+        }
+        rescanFrameCounter = (rescanFrameCounter + 1) % 180;
+
         if (statusFrameCounter == 0) {
             /* sceCdReadClock() fills this via a SIF RPC - the IOP DMAs
              * its response back into EE memory. An unaligned/unpadded
@@ -497,9 +571,29 @@ int main(int argc, char *argv[])
             struct padButtonStatus buttons;
             padRead(0, 0, &buttons);
             pressed = 0xffff ^ buttons.btns;
+            if (disconnectFrames > 30)
+                logMsg("controller reconnected");
+            disconnectFrames = 0;
+        } else {
+            /* A handful of not-stable frames is normal (between reads,
+             * brief bus contention) - only treat it as a real disconnect
+             * once it's sustained for about half a second, so momentary
+             * blips don't flash the message or spam the log. */
+            if (disconnectFrames == 30)
+                logMsg("controller disconnected");
+            if (disconnectFrames < 1000000)
+                disconnectFrames++;
         }
         u32 edge = pressed & ~prevPressed;
         prevPressed = pressed;
+
+        if (edge & PAD_START) {
+            overlayVisible = !overlayVisible;
+            /* Sticky - opening the overlay once starts flushing the log
+             * to disk for the rest of the session (see log.c), even if
+             * closed again right after. */
+            logSetDebugEnabled(1);
+        }
 
         /* M11: SELECT is a real, immediate system poweroff - not
          * expected to "return" to the loop on hardware, but PCSX2's own
@@ -544,13 +638,23 @@ int main(int argc, char *argv[])
                 metas[focus].launchCount++;
                 metadataSave(entries[focus].path, &metas[focus]);
 
+                logMsg("launching: %s", entries[focus].path);
+
                 char *stage2Argv[2];
                 stage2Argv[0] = entries[focus].path;
                 stage2Argv[1] = "0"; /* reset_iop: false, the common case */
                 elfLoadAndExec("mc0:/stage2.elf", 0, 2, stage2Argv);
                 /* Not expected to return - if it does, the launch failed;
                  * fall through and keep the browser up rather than
-                 * hanging (plan section 11's fallback philosophy). */
+                 * hanging (plan section 11's fallback philosophy). M13:
+                 * this used to be entirely silent - pressing X on a bad
+                 * ELF, or one whose device was removed since the boot-
+                 * time scan, produced no visible feedback at all,
+                 * indistinguishable from the launch attempt itself
+                 * hanging. Now shown via the status line for a few
+                 * seconds instead. */
+                logMsg("launch failed: %s", entries[focus].path);
+                launchFailedFramesLeft = 180;
             }
         }
 
@@ -650,7 +754,8 @@ int main(int argc, char *argv[])
             memcpy(label, full, len);
             label[len] = '\0';
 
-            bitmapFontPrint(gsGlobal, &font, x + 4.0f, y + cellSize - 20.0f, theme->labelColor, label);
+            if (fontOk)
+                bitmapFontPrint(gsGlobal, &font, x + 4.0f, y + cellSize - 20.0f, theme->labelColor, label);
         }
 
         /* Explicit strip clear, since the routine full-screen fill above
@@ -675,7 +780,54 @@ int main(int argc, char *argv[])
         gsKit_set_test(gsGlobal, GS_ATEST_ON);
         gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
 
-        bitmapFontPrint(gsGlobal, &font, marginX, safeBottom + 2.0f, theme->labelColor, statusLine);
+        /* Priority: disconnected controller > a recent launch failure >
+         * the normal disc/RTC readout. Both overrides count down/reset
+         * on their own regardless of whether text actually gets drawn
+         * this frame, so they behave correctly even if fontOk is false. */
+        const char *lineToShow = statusLine;
+        if (disconnectFrames > 30) {
+            strcpy(overrideMsg, "controller disconnected");
+            lineToShow = overrideMsg;
+        } else if (launchFailedFramesLeft > 0) {
+            strcpy(overrideMsg, "launch failed");
+            lineToShow = overrideMsg;
+            launchFailedFramesLeft--;
+        }
+
+        if (fontOk)
+            bitmapFontPrint(gsGlobal, &font, marginX, safeBottom + 2.0f, theme->labelColor, lineToShow);
+
+        /* M13 debug overlay (toggled with START) - a plain, opaque dark
+         * panel over the whole safe area, showing the most recent log
+         * lines newest-at-bottom. Deliberately opaque rather than
+         * translucent - alpha blending has been the single most
+         * troublesome GS state in this whole project (M7's blend
+         * equation, M11's Z-test discovery); a solid panel is simplest
+         * and needs none of that. */
+        if (overlayVisible) {
+            gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
+            gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
+            gsKit_prim_sprite(gsGlobal, marginX, marginY, marginX + safeW, safeBottom, 1,
+                               GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
+            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
+            gsKit_set_test(gsGlobal, GS_ATEST_ON);
+            gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
+
+            if (fontOk) {
+                int n = logLineCount();
+                int maxRows = (int)((safeBottom - marginY) / 16.0f) - 1;
+                int startIdx = (n > maxRows) ? n - maxRows : 0;
+                int row = 0;
+                while (startIdx + row < n) {
+                    const char *line = logLine(startIdx + row);
+                    if (line)
+                        bitmapFontPrint(gsGlobal, &font, marginX + 4.0f, marginY + 4.0f + row * 16.0f,
+                                         GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00), line);
+                    row++;
+                }
+            }
+        }
 
         gsKit_queue_exec(gsGlobal);
         gsKit_sync_flip(gsGlobal);

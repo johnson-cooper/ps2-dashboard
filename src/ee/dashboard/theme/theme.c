@@ -155,7 +155,19 @@ static int decodeBackground(GSTEXTURE *tex, GSGLOBAL *gsGlobal, const unsigned c
 
     /* gsKit_texture_upload() doesn't allocate VRAM itself - M7's
      * confirmed gotcha (plan section 7), applies here too. */
-    tex->Vram = gsKit_vram_alloc(gsGlobal, gsKit_texture_size(width, height, GS_PSM_CT32), GSKIT_ALLOC_USERBUFFER);
+    u32 vramSize = gsKit_texture_size(width, height, GS_PSM_CT32);
+    tex->Vram = gsKit_vram_alloc(gsGlobal, vramSize, GSKIT_ALLOC_USERBUFFER);
+
+    /* M13: gsKit_vram_alloc() doesn't fail loudly on overflow - checked
+     * against the real, hard 4MB VRAM ceiling (measured in M7) instead
+     * of guessing at a specific error sentinel value. themeLoad()'s
+     * caller already treats a non-zero return here as "no background,
+     * fall back to solid color" - this just makes that fallback actually
+     * reachable instead of silently corrupting VRAM past its end. */
+    if (tex->Vram + vramSize > 0x00400000) {
+        free(pixels);
+        return -1;
+    }
 
     FlushCache(0);
     gsKit_texture_upload(gsGlobal, tex);

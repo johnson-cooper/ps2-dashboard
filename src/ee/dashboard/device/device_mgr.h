@@ -12,9 +12,18 @@ typedef struct DeviceFamily {
     const char *mountPrefix; /* NULL for non-filesystem families (network) */
     int attempted;           /* loadModules() has been called */
     int loaded;              /* loadModules() succeeded */
-    int available;           /* last probe() result */
+    int available;           /* last probe()/quickRescan() result */
     int (*loadModules)(struct DeviceFamily *self);
     int (*probe)(struct DeviceFamily *self);
+    /* M13 (plan section 11, "removed storage mid-browse"): a cheap,
+     * single-shot recheck for periodic mid-session rescanning - NULL for
+     * families that shouldn't be periodically rescanned. Deliberately
+     * separate from probe(): probe() for mass/network/smb involves
+     * multi-second retry loops or login sequences appropriate for the
+     * one-time boot wait, but not for a recheck run every few seconds -
+     * calling probe() itself periodically would introduce exactly the
+     * kind of visible stutter/hang this milestone is trying to close. */
+    int (*quickProbe)(struct DeviceFamily *self);
 } DeviceFamily;
 
 /* Returns the built-in family table and its length. Families are
@@ -28,5 +37,12 @@ DeviceFamily *deviceMgrGetFamilies(int *count);
  * updating its attempted/loaded/available fields in place. Safe to call
  * repeatedly - loadModules only actually runs once. */
 void deviceMgrRefresh(DeviceFamily *family);
+
+/* Cheap, no-retry recheck of one family's availability via its
+ * quickProbe() - a no-op if quickProbe is NULL (this family isn't
+ * periodically rescanned) or its modules never loaded. Safe to call
+ * every frame if needed - unlike deviceMgrRefresh()'s probe(), this
+ * never blocks on a multi-second retry loop. */
+void deviceMgrQuickRescan(DeviceFamily *family);
 
 #endif

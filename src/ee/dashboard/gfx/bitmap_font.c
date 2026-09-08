@@ -55,8 +55,20 @@ int bitmapFontInit(BitmapFont *font, GSGLOBAL *gsGlobal)
 
     /* gsKit_texture_upload() doesn't allocate VRAM itself - confirmed in
      * M7 (plan section 7). */
-    font->texture.Vram =
-        gsKit_vram_alloc(gsGlobal, gsKit_texture_size(atlasW, atlasH, GS_PSM_CT32), GSKIT_ALLOC_USERBUFFER);
+    u32 vramSize = gsKit_texture_size(atlasW, atlasH, GS_PSM_CT32);
+    font->texture.Vram = gsKit_vram_alloc(gsGlobal, vramSize, GSKIT_ALLOC_USERBUFFER);
+
+    /* M13: gsKit_vram_alloc() doesn't fail loudly on overflow - checked
+     * against the real, hard 4MB VRAM ceiling (measured in M7) instead
+     * of guessing at a specific error sentinel value. The font atlas is
+     * the very first VRAM allocation after the screen/Z buffers, so this
+     * should never actually trip in practice, but main.c's caller now
+     * checks this return and degrades to a text-free UI rather than
+     * silently corrupting whatever VRAM region this overflowed into. */
+    if (font->texture.Vram + vramSize > 0x00400000) {
+        free(pixels);
+        return -1;
+    }
 
     /* CPU wrote the decoded glyphs above; the DMA-based upload below
      * needs a cache flush first or it can read stale memory - also
