@@ -1,0 +1,13 @@
+CompileFlags:
+  Remove:
+    - -G*
+    - -m*
+    - -fno-toplevel-reorder
+  Add:
+    - -D_EE
+    - -isystemC:/Users/yvnem/AppData/Local/ps2build/toolchain/ee/bin/../lib/gcc/mips64r5900el-ps2-elf/15.3.1/../../../../mips64r5900el-ps2-elf/include/c++/15.3.1
+    - -isystemC:/Users/yvnem/AppData/Local/ps2build/toolchain/ee/bin/../lib/gcc/mips64r5900el-ps2-elf/15.3.1/../../../../mips64r5900el-ps2-elf/include/c++/15.3.1/mips64r5900el-ps2-elf
+    - -isystemC:/Users/yvnem/AppData/Local/ps2build/toolchain/ee/bin/../lib/gcc/mips64r5900el-ps2-elf/15.3.1/../../../../mips64r5900el-ps2-elf/include/c++/15.3.1/backward
+    - -isystemC:/Users/yvnem/AppData/Local/ps2build/toolchain/ee/bin/../lib/gcc/mips64r5900el-ps2-elf/15.3.1/include
+    - -isystemC:/Users/yvnem/AppData/Local/ps2build/toolchain/ee/bin/../lib/gcc/mips64r5900el-ps2-elf/15.3.1/include-fixed
+    - -isystemC:/Users/yvnem/AppData/Local/ps2build/toolchain/ee/bin/../lib/gcc/mips64r5900el-ps2-elf/15.3.1/../../../../mips64r5900el-ps2-elf/include

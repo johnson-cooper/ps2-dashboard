@@ -1,0 +1,35 @@
+project: ps2launcher
+
+targets:
+  - name: dashboard
+    type: ee
+    sources: [src/ee/dashboard/main.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c]
+    headers: [common]
+    libs: [filexio, gskit, dmakit, pad, png, z, poweroff, cdvd]
+    pack: true
+
+  - name: target
+    type: ee
+    sources: [src/ee/target/main.c]
+    libs: [gskit, dmakit]
+
+  - name: stage2
+    type: ee
+    sources: [src/ee/stage2/main.c, src/ee/common/elfloader.c]
+    libs: [filexio]
+    linkfile: src/ee/stage2/linkfile
+
+  - name: texturetest
+    type: ee
+    sources:
+      - src/ee/texturetest/main.c
+      - src/ee/dashboard/gfx/texture_atlas.c
+      - src/ee/texturetest/embedded/icon_red.c
+      - src/ee/texturetest/embedded/icon_green.c
+      - src/ee/texturetest/embedded/icon_blue.c
+      - src/ee/texturetest/embedded/icon_yellow.c
+      - src/ee/texturetest/embedded/icon_cyan.c
+      - src/ee/texturetest/embedded/icon_magenta.c
+      - src/ee/texturetest/embedded/icon_orange.c
+      - src/ee/texturetest/embedded/icon_white.c
+    libs: [debug, filexio, gskit, dmakit, png, z]
