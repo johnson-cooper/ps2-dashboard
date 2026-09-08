@@ -378,23 +378,7 @@ int main(int argc, char *argv[])
      * fine for a once-a-second cosmetic refresh. */
     int statusFrameCounter = 0;
     static char statusLine[64] __attribute__((aligned(64)));
-    static char statusLinePending[64] __attribute__((aligned(64)));
     statusLine[0] = '\0';
-    statusLinePending[0] = '\0';
-
-    /* Diagnostic step: instead of re-rendering this text at the same
-     * screen position on every single frame (~60x/sec) even when its
-     * content hasn't changed, only (re)draw it for a few frames right
-     * after it actually changes, then leave the already-correct pixels
-     * alone. If that resolves the glitching, repeated identical redraws
-     * at this position were themselves the trigger - something none of
-     * the earlier GS-state fixes (blend/test/alignment/UV inset)
-     * addressed, since those didn't change how OFTEN the draw happened.
-     * Redraw for a few frames, not just one, so the text still reaches
-     * every buffer in whatever multi-buffering gsKit is doing under the
-     * hood - drawing it only once could leave a stale copy in a buffer
-     * that isn't shown again for another frame or two. */
-    int statusRedrawFramesLeft = 0;
 
     while (1) {
         if (statusFrameCounter == 0) {
@@ -411,15 +395,11 @@ int main(int argc, char *argv[])
             static sceCdCLOCK clock __attribute__((aligned(64)));
             int diskType = sceCdGetDiskType();
             if (sceCdReadClock(&clock)) {
-                sprintf(statusLinePending, "%s | 20%02d-%02d-%02d %02d:%02d:%02d", diskTypeName(diskType),
+                sprintf(statusLine, "%s | 20%02d-%02d-%02d %02d:%02d:%02d", diskTypeName(diskType),
                         bcdToDec(clock.year), bcdToDec(clock.month), bcdToDec(clock.day), bcdToDec(clock.hour),
                         bcdToDec(clock.minute), bcdToDec(clock.second));
             } else {
-                sprintf(statusLinePending, "%s | RTC unavailable", diskTypeName(diskType));
-            }
-            if (strcmp(statusLinePending, statusLine) != 0) {
-                strcpy(statusLine, statusLinePending);
-                statusRedrawFramesLeft = 3;
+                sprintf(statusLine, "%s | RTC unavailable", diskTypeName(diskType));
             }
         }
         statusFrameCounter = (statusFrameCounter + 1) % 60;
@@ -502,6 +482,7 @@ int main(int argc, char *argv[])
              * today since no bundled theme actually has a background. */
             gsKit_set_primalpha(gsGlobal, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
             gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
             /* Neutral modulation: RGB 0xFF (matches bitmap_font.c's pure-
              * white glyph pixels needing 0xFF to render untinted) and
              * alpha 0x80, the GS's own 7-bit "fully opaque" value - not
@@ -511,6 +492,7 @@ int main(int argc, char *argv[])
                                        safeBottom, (float)theme->background.Width,
                                        (float)theme->background.Height * (safeBottom / (float)gsGlobal->Height), 0,
                                        GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00));
+            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
             gsKit_set_test(gsGlobal, GS_ATEST_ON);
             gsKit_set_primalpha(gsGlobal, GS_BLEND_BACK2FRONT, 0);
         } else {
@@ -528,7 +510,9 @@ int main(int argc, char *argv[])
              * guarantees this fill actually writes. */
             gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
             gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
             gsKit_prim_sprite(gsGlobal, 0.0f, 0.0f, (float)gsGlobal->Width, safeBottom, 0, theme->bgColor);
+            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
             gsKit_set_test(gsGlobal, GS_ATEST_ON);
             gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
         }
@@ -548,8 +532,10 @@ int main(int argc, char *argv[])
              * whatever state the last text draw left either stage in. */
             gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
             gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
             gsKit_prim_sprite(gsGlobal, x, y, x + cellSize, y + cellSize, 1,
                                i == focus ? theme->focusColor : theme->tileColor);
+            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
             gsKit_set_test(gsGlobal, GS_ATEST_ON);
             gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
 
@@ -579,22 +565,29 @@ int main(int argc, char *argv[])
             bitmapFontPrint(gsGlobal, &font, x + 4.0f, y + cellSize - 20.0f, theme->labelColor, label);
         }
 
-        if (statusRedrawFramesLeft > 0) {
-            /* Explicit strip clear, since the routine full-screen fill
-             * above now deliberately stops at safeBottom and never
-             * touches this area - it must be cleared here instead,
-             * right before (re)drawing the text, using the same
-             * guaranteed-opaque guards. */
-            gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
-            gsKit_set_test(gsGlobal, GS_ATEST_OFF);
-            gsKit_prim_sprite(gsGlobal, 0.0f, safeBottom, (float)gsGlobal->Width, (float)gsGlobal->Height, 0,
-                               theme->bgColor);
-            gsKit_set_test(gsGlobal, GS_ATEST_ON);
-            gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
+        /* Explicit strip clear, since the routine full-screen fill above
+         * stops at safeBottom and never touches this area - cleared here
+         * instead, right before (re)drawing the text, using the same
+         * guaranteed-opaque guards. Done unconditionally every frame,
+         * same as the background/tiles above: gsGlobal double-buffers via
+         * gsKit_sync_flip(), so a region only touched on *some* frames
+         * (as this used to be, redrawing only for a few frames right
+         * after the text changed) can leave stale text baked into
+         * whichever buffer didn't get the update in time - surfacing as
+         * old/new text clashing on flip. Redrawing every frame removes
+         * that failure mode entirely; the RTC/disc-status RPC itself is
+         * still only polled once a second via statusFrameCounter above,
+         * so this doesn't add any extra IOP round-trips. */
+        gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
+        gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+        gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
+        gsKit_prim_sprite(gsGlobal, 0.0f, safeBottom, (float)gsGlobal->Width, (float)gsGlobal->Height, 0,
+                           theme->bgColor);
+        gsKit_set_test(gsGlobal, GS_ZTEST_ON);
+        gsKit_set_test(gsGlobal, GS_ATEST_ON);
+        gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
 
-            bitmapFontPrint(gsGlobal, &font, marginX, safeBottom + 2.0f, theme->labelColor, statusLine);
-            statusRedrawFramesLeft--;
-        }
+        bitmapFontPrint(gsGlobal, &font, marginX, safeBottom + 2.0f, theme->labelColor, statusLine);
 
         gsKit_queue_exec(gsGlobal);
         gsKit_sync_flip(gsGlobal);

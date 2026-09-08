@@ -81,12 +81,23 @@ static int probeUSB(DeviceFamily *self)
     return 0;
 }
 
-/* --- CD/DVD (cdrom0:) ------------------------------------------------ */
-
+/* --- CD/DVD (cdrom0:) ------------------------------------------------
+ * cdvdman.irx alone only provides the low-level sceCd* RPC (disc status/
+ * type/RTC - what M11's dashboard status line uses directly). It does
+ * NOT make cdrom0: browsable through fileXio/iomanX - that needs
+ * cdvdfsv.irx, the separate driver providing the actual ISO9660
+ * filesystem layer. Without it, fileXioGetStat("cdrom0:/") always fails
+ * regardless of what's mounted, so probeFs() below would report cdrom0
+ * unavailable even with a real disc inserted - a real bug this project
+ * had for the whole of M6-M11, confirmed by cdvdfsv's package.yaml
+ * declaring it as its own separate driver artifact, not bundled into
+ * cdvdman's. */
 static int loadCD(DeviceFamily *self)
 {
     (void)self;
-    return loadModule("host:modules/cdvdman.irx") < 0 ? -1 : 0;
+    if (loadModule("host:modules/cdvdman.irx") < 0)
+        return -1;
+    return loadModule("host:modules/cdvdfsv.irx") < 0 ? -1 : 0;
 }
 
 /* --- Internal HDD (hdd0:) --------------------------------------------

@@ -78,6 +78,17 @@ void bitmapFontPrint(GSGLOBAL *gsGlobal, BitmapFont *font, float x, float y, u64
      * a handful of text draws per frame. */
     gsKit_set_primalpha(gsGlobal, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
     gsKit_set_test(gsGlobal, GS_ATEST_OFF);
+    /* Z-testing is a separate preset from alpha-testing on this same
+     * function - GS_ATEST_OFF above never touched it. Every prior "why
+     * won't this redraw over old content" bug in this project turned out
+     * to be one of these test/blend stages left in a leftover state;
+     * this is the one stage never yet addressed. If Z-test defaults to
+     * enabled with a strict-greater comparison and the Z-buffer is never
+     * cleared between frames, every glyph redrawn at the same Z as a
+     * prior frame would fail the test and never actually write - explains
+     * "old text doesn't disappear, new text only shows where nothing was
+     * drawn before" exactly. */
+    gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
 
     float cx = x, cy = y;
     const unsigned char *p = (const unsigned char *)text;
@@ -112,6 +123,7 @@ void bitmapFontPrint(GSGLOBAL *gsGlobal, BitmapFont *font, float x, float y, u64
         p++;
     }
 
+    gsKit_set_test(gsGlobal, GS_ZTEST_ON);
     gsKit_set_test(gsGlobal, GS_ATEST_ON);
     gsKit_set_primalpha(gsGlobal, GS_BLEND_BACK2FRONT, 0);
 }
