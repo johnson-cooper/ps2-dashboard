@@ -208,6 +208,82 @@ static const char *baseName(const char *path)
     return base;
 }
 
+/* Real PS2 game discs don't have a "*.elf" file anywhere on them - the
+ * scan above would never find one - but the actual boot executable they
+ * reference IS a genuine ELF binary, just under an arbitrary filename
+ * (e.g. "SLUS_123.45"). SYSTEM.CNF at the disc root names it:
+ *   BOOT2 = cdrom0:\SLUS_123.45;1
+ * elfLoadAndExec() only ever validated ELF magic, never the filename, so
+ * once this path is known it launches exactly like any other entry - no
+ * new loader logic needed, only a different way to discover the path.
+ * PS1 discs use "BOOT" (no "2") and a completely different, non-ELF
+ * executable format requiring PS1 BIOS compatibility mode on real
+ * hardware - out of scope, and this function's "BOOT2"-only match
+ * naturally skips them rather than finding a path we couldn't load
+ * anyway. Returns 0 and fills out (converting backslashes to forward
+ * slashes; the ";N" ISO9660 version suffix is kept as-is since cdrom0:
+ * needs it to resolve the file) on success. */
+/* fileXioOpen()/fileXioDopen()+fileXioDread() against cdrom0: turned out
+ * unreliable in practice - fileXioGetStat() on the root succeeds (that's
+ * how device_mgr.c's probeFs() sees the family as available at all), but
+ * both a direct SYSTEM.CNF open and a root directory listing failed
+ * outright, confirmed via live PCSX2 memory reads. cdvdfsv's fileXio
+ * compatibility layer apparently doesn't fully cover file lookup/listing
+ * the way it does for MC/USB's FAT-style drivers. libcdvd's own,
+ * CD-specific file API - sceCdSearchFile() + sceCdRead() - is what
+ * wLaunchELF/OPL actually use for this, and doesn't go through
+ * fileXio/iomanX at all. Confirmed working end-to-end against a real
+ * PS2 disc (SYSTEM.CNF found, read, and parsed to a real boot path). */
+static int parseDiscBootPath(char *out, int outSize)
+{
+    sceCdlFILE file;
+    if (!sceCdSearchFile(&file, "\\SYSTEM.CNF;1"))
+        return -1;
+
+    unsigned int sectors = (file.size + 2047) / 2048;
+    if (sectors == 0)
+        sectors = 1;
+    if (sectors > 4) /* SYSTEM.CNF is always a handful of lines - guard against a bogus size */
+        sectors = 4;
+
+    static unsigned char cdBuf[4 * 2048] __attribute__((aligned(64)));
+    static sceCdRMode mode;
+    mode.trycount = 0;
+    mode.spindlctrl = 0;
+    mode.datapattern = SCECdSecS2048;
+    mode.pad = 0;
+
+    if (!sceCdRead(file.lsn, sectors, cdBuf, &mode))
+        return -1;
+    sceCdSync(0); /* sceCdRead is non-blocking - this is the documented way to wait for it */
+
+    unsigned int n = file.size;
+    if (n >= sizeof(cdBuf))
+        n = sizeof(cdBuf) - 1;
+    cdBuf[n] = '\0';
+
+    char *line = strtok((char *)cdBuf, "\r\n");
+    while (line) {
+        if (strncmp(line, "BOOT2", 5) == 0) {
+            char *eq = strchr(line, '=');
+            if (!eq)
+                return -1;
+            char *p = eq + 1;
+            while (*p == ' ')
+                p++;
+            int i = 0;
+            while (*p && *p != ' ' && *p != '\t' && i < outSize - 1) {
+                out[i++] = (*p == '\\') ? '/' : *p;
+                p++;
+            }
+            out[i] = '\0';
+            return (i > 0) ? 0 : -1;
+        }
+        line = strtok(NULL, "\r\n");
+    }
+    return -1;
+}
+
 static int writeFile(const char *path, const void *data, unsigned int size)
 {
     int fd = fileXioOpen(path, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC, 0666);
@@ -257,6 +333,18 @@ int main(int argc, char *argv[])
     for (i = 0; i < familyCount; i++) {
         if (families[i].mountPrefix && families[i].available)
             scanDevice(families[i].mountPrefix);
+    }
+
+    /* A real game disc, if one's mounted, needs its own discovery path
+     * (see parseDiscBootPath()'s header comment) rather than the
+     * extension-based scan above, which will never find anything on
+     * commercial disc media. */
+    for (i = 0; i < familyCount; i++) {
+        if (strcmp(families[i].name, "cdrom0") == 0 && families[i].available) {
+            if (entryCount < MAX_ENTRIES && parseDiscBootPath(entries[entryCount].path, sizeof(entries[0].path)) == 0)
+                entryCount++;
+            break;
+        }
     }
 
     /* stage2 is deployed unconditionally - every launch chains through it
