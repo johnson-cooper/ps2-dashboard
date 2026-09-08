@@ -16,7 +16,8 @@ targets:
   - name: stage2
     type: ee
     sources: [src/ee/stage2/main.c, src/ee/common/elfloader.c]
-    libs: [filexio]
+    headers: [common]
+    libs: [filexio, cdvd]
     linkfile: src/ee/stage2/linkfile
 
   - name: texturetest
