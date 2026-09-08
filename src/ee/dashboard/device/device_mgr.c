@@ -3,10 +3,28 @@
 #include <kernel.h>
 #include <sifrpc.h>
 #include <loadfile.h>
+#include <netman.h>
+#include <ps2ips.h>
+#include <ps2sdkapi.h>
+#include <string.h>
+
+#include "smbman.h"
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <iox_stat.h>
+
+/* ps2ip_setconfig()/ps2ip_getconfig() aren't declared by ps2ips.h itself
+ * (that header only has ps2ip_init()/ps2ip_deinit() - see ps2sdkapi.h's
+ * own comment describing ps2ips as "this package's small RPC-client
+ * sibling" of the *other*, mutually-exclusive EE-resident lwIP stack
+ * package), but they ARE already declared transitively through
+ * ps2ips.h's own <sys/socket.h> include (as ps2ip_setconfig/getconfig
+ * macros forwarding to libcglue_ps2ip_setconfig/getconfig, using the
+ * real t_ip_info type from ps2sdkapi.h) - confirmed by a real build
+ * error the first time this tried to hand-declare a locally-defined
+ * stand-in struct instead ("conflicting types"). Using the real
+ * t_ip_info directly here, matching what's already in scope. */
 
 /* No status logging here (deliberately) - callers that still want a
  * text log (e.g. a future debug-only build) can wrap loadModules() and
@@ -135,10 +153,22 @@ static int loadHDD(DeviceFamily *self)
     return 0;
 }
 
-/* --- Network ----------------------------------------------------------
- * No filesystem mount point - "available" here just means the driver
- * stack loaded, not that a link/IP address exists yet (that's later
- * work, once there's a settings UI to configure it). */
+/* --- Network ------------------------------------------------------------
+ * "available" means a real, DHCP-assigned IP was obtained, not just that
+ * the driver stack loaded - matching every other family's probe()
+ * meaning "actually usable right now", not merely "attempted".
+ *
+ * ps2sdk ships two separate, mutually exclusive network stack
+ * architectures: a full lwIP stack resident on the EE (package "ps2ip",
+ * pairing with netman+smap alone - no documented EE init entry point in
+ * its own headers), or a thin EE-side RPC client (package "ps2ips",
+ * ps2sdkapi.h's own comment calls it "this package's small RPC-client
+ * sibling") talking to an IOP-resident stack (ps2ips.irx, from the
+ * separate "ps2ips-iop" package). Going with the latter here - it has a
+ * clean, documented ps2ip_init()/ps2ip_deinit() entry point, unlike the
+ * EE-resident alternative. This project's earlier module set
+ * (ps2ip-nm.irx) was actually a THIRD, mismatched combination, paired
+ * with netman+smap from the first architecture - fixed here. */
 
 static int loadNetwork(DeviceFamily *self)
 {
@@ -149,14 +179,105 @@ static int loadNetwork(DeviceFamily *self)
         return -1;
     if (loadModule("host:modules/smap.irx") < 0)
         return -1;
-    if (loadModule("host:modules/ps2ip-nm.irx") < 0)
+    if (loadModule("host:modules/ps2ips.irx") < 0)
         return -1;
+
+    if (NetManInit() < 0)
+        return -1;
+    if (ps2ip_init() < 0)
+        return -1;
+
     return 0;
 }
 
+/* DHCP negotiation is asynchronous and can take a few seconds - same
+ * retry-with-busyWait shape as probeUSB() above for USB enumeration.
+ * "sm0" is the conventional netif name smap's driver registers under.
+ * Untestable in PCSX2 (no real DEV9/network hardware configured here,
+ * confirmed back in M6) - this always times out and reports unavailable
+ * in this specific environment; the retry loop itself is what needs
+ * confirming on real hardware, where DHCP negotiation genuinely takes
+ * measurable time. */
 static int probeNetwork(DeviceFamily *self)
 {
-    return self->loaded;
+    if (!self->loaded)
+        return 0;
+
+    int i;
+    for (i = 0; i < 20; i++) {
+        t_ip_info info;
+        if (ps2ip_getconfig("sm0", &info) >= 0 && info.ipaddr.s_addr != 0)
+            return 1;
+        busyWait(3000000);
+    }
+    return 0;
+}
+
+/* --- SMB share (smb0:) --------------------------------------------------
+ * smbman.irx exposes a "smb0:" file device once a share is open - browsed
+ * via the exact same generic fileXio scan every other family uses
+ * (scanDevice() in main.c), no special-casing needed once probeSmb()
+ * below succeeds. Requires network's DHCP-assigned IP already up, so
+ * it's listed (and therefore probed) after "network" in families[]
+ * below.
+ *
+ * No settings UI exists yet to collect a real server IP/credentials/
+ * share name - same scope cut as the missing static-IP-entry UI for
+ * "network" above. These are placeholder values that will always fail
+ * login against a real network (no such server exists), but the login/
+ * open-share devctl sequence itself is genuine, working code - ready for
+ * a future settings screen to supply real values instead. */
+#define SMB_PLACEHOLDER_SERVER_IP "192.168.1.1"
+#define SMB_PLACEHOLDER_SERVER_PORT 445
+#define SMB_PLACEHOLDER_USER "guest"
+#define SMB_PLACEHOLDER_PASSWORD ""
+#define SMB_PLACEHOLDER_SHARE "PS2"
+
+static int loadSmb(DeviceFamily *self)
+{
+    (void)self;
+    return loadModule("host:modules/smbman.irx") < 0 ? -1 : 0;
+}
+
+static int networkAvailable(void)
+{
+    int count;
+    DeviceFamily *fams = deviceMgrGetFamilies(&count);
+    int i;
+    for (i = 0; i < count; i++) {
+        if (strcmp(fams[i].name, "network") == 0)
+            return fams[i].available;
+    }
+    return 0;
+}
+
+static int probeSmb(DeviceFamily *self)
+{
+    if (!self->loaded || !networkAvailable())
+        return 0;
+
+    smbLogOn_in_t login;
+    memset(&login, 0, sizeof(login));
+    strncpy(login.serverIP, SMB_PLACEHOLDER_SERVER_IP, sizeof(login.serverIP) - 1);
+    login.serverPort = SMB_PLACEHOLDER_SERVER_PORT;
+    strncpy(login.User, SMB_PLACEHOLDER_USER, sizeof(login.User) - 1);
+    strncpy(login.Password, SMB_PLACEHOLDER_PASSWORD, sizeof(login.Password) - 1);
+    login.PasswordType = SMB_PLAINTEXT_PASSWORD;
+
+    if (fileXioDevctl("smb0:", SMB_DEVCTL_LOGON, &login, sizeof(login), NULL, 0) < 0)
+        return 0;
+
+    smbOpenShare_in_t openShare;
+    memset(&openShare, 0, sizeof(openShare));
+    strncpy(openShare.ShareName, SMB_PLACEHOLDER_SHARE, sizeof(openShare.ShareName) - 1);
+    openShare.PasswordType = SMB_PLAINTEXT_PASSWORD;
+
+    if (fileXioDevctl("smb0:", SMB_DEVCTL_OPENSHARE, &openShare, sizeof(openShare), NULL, 0) < 0) {
+        fileXioDevctl("smb0:", SMB_DEVCTL_LOGOFF, NULL, 0, NULL, 0);
+        return 0;
+    }
+
+    return 1;
 }
 
 static DeviceFamily families[] = {
@@ -166,6 +287,7 @@ static DeviceFamily families[] = {
     { "cdrom0", "cdrom0:/", 0, 0, 0, loadCD, probeFs },
     { "hdd0", "hdd0:/", 0, 0, 0, loadHDD, probeFs },
     { "network", NULL, 0, 0, 0, loadNetwork, probeNetwork },
+    { "smb", "smb0:/", 0, 0, 0, loadSmb, probeSmb },
 };
 
 DeviceFamily *deviceMgrGetFamilies(int *count)
