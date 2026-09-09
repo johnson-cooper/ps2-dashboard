@@ -3,7 +3,7 @@ project: ps2launcher
 targets:
   - name: dashboard
     type: ee
-    sources: [src/ee/dashboard/main.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/log/log.c, src/ee/dashboard/audio/audio.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c, src/ee/dashboard/embedded/sfx_blip_pcm.c, src/ee/dashboard/embedded/music_adpcm.c]
+    sources: [src/ee/dashboard/main.c, src/ee/dashboard/app/app_entry.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/gfx/ps2_icon.c, src/ee/dashboard/gfx/icon_cache.c, src/ee/dashboard/gfx/fallback_icons.c, src/ee/dashboard/ui/layout.c, src/ee/dashboard/ui/background.c, src/ee/dashboard/ui/dashboard_ui.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/log/log.c, src/ee/dashboard/audio/audio.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c, src/ee/dashboard/embedded/sfx_blip_pcm.c, src/ee/dashboard/embedded/music_adpcm.c]
     headers: [common]
     libs: [filexio, gskit, dmakit, pad, png, z, poweroff, cdvd, netman, ps2ips, audsrv]
     pack: true

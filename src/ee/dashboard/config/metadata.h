@@ -15,6 +15,15 @@
 typedef struct {
     int launchCount;
     int favorite;
+    /* M15: a monotonically increasing "when was this last launched"
+     * counter (not a wall-clock timestamp - the RTC is only read once a
+     * second and there's no guarantee it's even been read yet the first
+     * time an app launches) - lets the new Home screen's "Continue" item
+     * find the single most-recently-launched app by comparing this
+     * across entries[], the same way launchCount already tracked "how
+     * many times", without needing a real clock. 0 means "never
+     * launched". */
+    unsigned int lastLaunchOrder;
 } AppMetadata;
 
 /* Fills *out with saved metadata for elfPath, or all-zero defaults if

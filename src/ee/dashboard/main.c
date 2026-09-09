@@ -15,10 +15,14 @@
 #include <io_common.h>
 
 #include "../common/elfloader.h"
+#include "app/app_entry.h"
 #include "device/device_mgr.h"
 #include "gfx/bitmap_font.h"
+#include "gfx/icon_cache.h"
 #include "config/metadata.h"
 #include "theme/theme.h"
+#include "ui/dashboard_ui.h"
+#include "ui/layout.h"
 #include "log/log.h"
 #include "audio/audio.h"
 
@@ -28,7 +32,11 @@
  * theme.cfg/background.png are loaded back through the real fileXio
  * path-based loader (theme/theme.c) rather than special-cased in code -
  * proving the same asset-loading pipeline a real, user-supplied theme
- * folder would go through. */
+ * folder would go through. M15: the loaded Theme[] still drives the
+ * Library grid's tile/focus colors and is still cycled from the new
+ * System screen (ui/dashboard_ui.c) - only the *background* changed,
+ * from a theme's own flat/PNG background to the new animated starfield
+ * + floating cubes (ui/background.c), which isn't theme-specific. */
 extern unsigned char theme_dark_cfg[];
 extern unsigned int size_theme_dark_cfg;
 extern unsigned char theme_sunset_cfg[];
@@ -36,7 +44,6 @@ extern unsigned int size_theme_sunset_cfg;
 
 #define THEME_COUNT 2
 static Theme themes[THEME_COUNT];
-static int currentTheme = 0;
 
 /* M11: system services (plan section 9) - disc status/RTC read via
  * libcdvd (cdvdman.irx is already loaded by device_mgr.c's "cdrom0"
@@ -87,24 +94,7 @@ extern unsigned int size_target_elf;
 extern unsigned char stage2_elf[];
 extern unsigned int size_stage2_elf;
 
-/* M8 note: this is the first milestone with a real, navigable dashboard
- * UI - a grid of launchable ELF entries scanned across every available
- * device family (M6), rendered with gsKit (M1/M2/M7's proven patterns),
- * driven by the pad (M1/M2). Text labels were a deliberate, documented
- * gap in M8 (gsKit's own font system loads glyph sheets by path, hitting
- * the same POSIX/fopen device-table gap confirmed in M4/M7) - closed at
- * the start of M9 using wLaunchELF's bitmap font data (gfx/font_uLE.c,
- * gfx/bitmap_font.c), decoded directly into a GS texture atlas the same
- * way M7's icon atlas works, sidestepping gsKit's path-based loader
- * entirely rather than fighting the same fileXio-vs-fopen issue again. */
-
-#define GRID_COLS 4
 #define MAX_ENTRIES 32
-#define TITLE_SAFE_MARGIN 0.08f
-
-typedef struct {
-    char path[256];
-} AppEntry;
 
 /* Used only if a theme fails to load entirely (missing/corrupt files) -
  * an all-zero Theme would render solid black on black, indistinguishable
@@ -158,10 +148,62 @@ static int isInternalPlumbingFile(const char *name)
     return name[i] == '\0';
 }
 
+/* Returns a pointer into `path` just past its last ':' or '/' - e.g.
+ * "mc0:/target.elf" -> "target.elf". Never allocates; the result aliases
+ * the input. */
+static const char *baseName(const char *path)
+{
+    const char *base = path;
+    const char *p = path;
+    while (*p) {
+        if (*p == ':' || *p == '/')
+            base = p + 1;
+        p++;
+    }
+    return base;
+}
+
+/* Fills entry->title with a sane default derived from its path - the
+ * ELF filename, minus its extension (plan section 13's fallback title,
+ * used until/unless icon.sys discovery (gfx/icon_cache.c) finds a
+ * better one). Never overflows APP_ENTRY_TITLE_MAX. */
+static void setDefaultTitle(AppEntry *entry)
+{
+    const char *base = baseName(entry->path);
+    int len = 0;
+    while (base[len])
+        len++;
+    if (len >= 4 && hasElfExtension(base))
+        len -= 4;
+    if (len > APP_ENTRY_TITLE_MAX - 1)
+        len = APP_ENTRY_TITLE_MAX - 1;
+    memcpy(entry->title, base, len);
+    entry->title[len] = '\0';
+}
+
+static DeviceKind deviceKindForFamily(const char *name)
+{
+    if (strcmp(name, "mc0") == 0)
+        return DEVICE_MC0;
+    if (strcmp(name, "mc1") == 0)
+        return DEVICE_MC1;
+    if (strcmp(name, "mass") == 0)
+        return DEVICE_MASS;
+    if (strcmp(name, "cdrom0") == 0)
+        return DEVICE_CDROM;
+    if (strcmp(name, "hdd0") == 0)
+        return DEVICE_HDD;
+    if (strcmp(name, "network") == 0)
+        return DEVICE_NETWORK;
+    if (strcmp(name, "smb") == 0)
+        return DEVICE_SMB;
+    return DEVICE_UNKNOWN;
+}
+
 /* Scans one device's root directory for .elf/.ELF entries. prefix is
  * expected to already end in '/' (matches every mountPrefix in
  * device_mgr.c), so paths concatenate directly. */
-static void scanDevice(const char *prefix)
+static void scanDevice(const char *prefix, DeviceKind device)
 {
     iox_stat_t st;
     if (fileXioGetStat(prefix, &st) < 0)
@@ -182,7 +224,8 @@ static void scanDevice(const char *prefix)
         if (entryCount >= MAX_ENTRIES)
             break;
 
-        char *dst = entries[entryCount].path;
+        AppEntry *entry = &entries[entryCount];
+        char *dst = entry->path;
         const char *p = prefix;
         while (*p)
             *dst++ = *p++;
@@ -190,24 +233,15 @@ static void scanDevice(const char *prefix)
         while (*n)
             *dst++ = *n++;
         *dst = '\0';
+
+        entry->device = device;
+        entry->iconState = ICON_NOT_REQUESTED;
+        entry->iconSlot = -1;
+        setDefaultTitle(entry);
+
         entryCount++;
     }
     fileXioDclose(fd);
-}
-
-/* Returns a pointer into `path` just past its last ':' or '/' - e.g.
- * "mc0:/target.elf" -> "target.elf". Never allocates; the result aliases
- * the input. */
-static const char *baseName(const char *path)
-{
-    const char *base = path;
-    const char *p = path;
-    while (*p) {
-        if (*p == ':' || *p == '/')
-            base = p + 1;
-        p++;
-    }
-    return base;
 }
 
 /* Real PS2 game discs don't have a "*.elf" file anywhere on them - the
@@ -312,7 +346,16 @@ static void ensureDir(const char *path)
  * true before this, just not proactive). Assumes stage2.elf/target.elf
  * are already on mc0: (main() writes them before ever calling this) -
  * the entryCount==0 fallback path below depends on target.elf actually
- * existing by this point. */
+ * existing by this point.
+ *
+ * M15: every (re)populated entry starts with iconState ==
+ * ICON_NOT_REQUESTED - a full rescan can reuse the same entries[] slot
+ * for a completely different app (or the same one), and the icon cache
+ * (gfx/icon_cache.c) only ever trusts an entry's own iconState/iconSlot
+ * fields, never assumes anything about what previously lived at that
+ * array index, so this is always safe: a stale LOADED flag left over
+ * from before this rescan would otherwise show a wrong, unrelated
+ * cached icon. */
 static void rescanEntries(DeviceFamily *families, int familyCount)
 {
     entryCount = 0;
@@ -320,7 +363,7 @@ static void rescanEntries(DeviceFamily *families, int familyCount)
     int i;
     for (i = 0; i < familyCount; i++) {
         if (families[i].mountPrefix && families[i].available)
-            scanDevice(families[i].mountPrefix);
+            scanDevice(families[i].mountPrefix, deviceKindForFamily(families[i].name));
     }
 
     /* A real game disc, if one's mounted, needs its own discovery path
@@ -329,8 +372,14 @@ static void rescanEntries(DeviceFamily *families, int familyCount)
      * commercial disc media. */
     for (i = 0; i < familyCount; i++) {
         if (strcmp(families[i].name, "cdrom0") == 0 && families[i].available) {
-            if (entryCount < MAX_ENTRIES && parseDiscBootPath(entries[entryCount].path, sizeof(entries[0].path)) == 0)
+            if (entryCount < MAX_ENTRIES && parseDiscBootPath(entries[entryCount].path, sizeof(entries[0].path)) == 0) {
+                AppEntry *entry = &entries[entryCount];
+                entry->device = DEVICE_CDROM;
+                entry->iconState = ICON_NOT_REQUESTED;
+                entry->iconSlot = -1;
+                setDefaultTitle(entry);
                 entryCount++;
+            }
             break;
         }
     }
@@ -339,16 +388,22 @@ static void rescanEntries(DeviceFamily *families, int familyCount)
      * on a fresh memory card with no homebrew on it yet. */
     if (entryCount == 0) {
         const char *fallback = "mc0:/target.elf";
-        char *dst = entries[0].path;
+        AppEntry *entry = &entries[0];
+        char *dst = entry->path;
         while (*fallback)
             *dst++ = *fallback++;
         *dst = '\0';
+        entry->device = DEVICE_MC0;
+        entry->iconState = ICON_NOT_REQUESTED;
+        entry->iconSlot = -1;
+        setDefaultTitle(entry);
         entryCount = 1;
     }
 
-    /* M9: per-app metadata (launch count, favorite) - one small sibling
-     * .cfg file per entry (config/metadata.c). Missing or corrupt files
-     * both degrade to all-zero defaults, so this never blocks the scan. */
+    /* M9: per-app metadata (launch count, favorite, M15's launch order) -
+     * one small sibling .cfg file per entry (config/metadata.c). Missing
+     * or corrupt files both degrade to all-zero defaults, so this never
+     * blocks the scan. */
     for (i = 0; i < entryCount; i++)
         metadataLoad(entries[i].path, &metas[i]);
 }
@@ -464,43 +519,35 @@ int main(int argc, char *argv[])
         logMsg("theme load failed: sunset, using fallback colors");
     }
 
+    /* M15: the icon subsystem (gfx/icon_cache.c) - a small, fixed-size
+     * VRAM atlas (fallback badges + a bounded LRU pool of real decoded
+     * PS2 app icons). Same allocate-once-at-boot discipline as the font/
+     * theme textures above; a failure here (VRAM exhaustion) degrades to
+     * "no icons at all" rather than crashing - see icon_cache.h's
+     * `ready` field and every draw call gating on it. */
+    IconCache iconCache;
+    if (iconCacheInit(&iconCache, gsGlobal) < 0)
+        logMsg("icon cache init failed, running without app icons");
+
+    DashboardUi ui;
+    dashboardUiInit(&ui, THEME_COUNT);
+
     static char padBuf[256] __attribute__((aligned(64)));
     padInit(0);
     padPortOpen(0, 0, padBuf);
 
-    /* Title-safe layout: keep every interactive/visible element within an
-     * inset margin from the framebuffer edges, since the target displays
-     * are CRT-era TVs with variable overscan (plan section 7). */
-    float marginX = gsGlobal->Width * TITLE_SAFE_MARGIN;
-    float marginY = gsGlobal->Height * TITLE_SAFE_MARGIN;
-    float safeW = gsGlobal->Width - 2 * marginX;
-    float safeBottom = gsGlobal->Height - marginY;
+    /* Title-safe layout (plan section 4) - computed once (the runtime
+     * resolution doesn't change), shared by main.c's own status-line/
+     * debug-overlay drawing below and by dashboard_ui.c's per-screen
+     * content (ui/layout.c ensures both use the exact same numbers). */
+    LayoutRect rect;
+    layoutComputeSafeArea(&rect, gsGlobal, LAYOUT_STATUS_LINE_HEIGHT);
 
-    /* M11: reserve one line at the bottom of the title-safe area for a
-     * persistent disc-status/RTC readout - still within the safe-area
-     * bounds, just carved out of the grid's own space rather than drawn
-     * over top of it. */
-    float statusLineHeight = 20.0f;
-    safeBottom -= statusLineHeight;
-
-    float gap = 16.0f;
-    float cellSize = (safeW - (GRID_COLS - 1) * gap) / GRID_COLS;
-
-    /* How many characters of a filename fit across one tile at 8px/char,
-     * leaving a little breathing room on each side - truncated labels
-     * beat labels that overflow into the next tile. */
-    int maxLabelChars = (int)(cellSize / 8.0f) - 1;
-    if (maxLabelChars < 1)
-        maxLabelChars = 1;
-    if (maxLabelChars > 63)
-        maxLabelChars = 63;
-
-    int focus = 0;
     u32 prevPressed = 0;
 
     /* M13 (plan section 11's own explicit task, "logging/debug overlay") -
-     * START was unused (SELECT is poweroff, L1/R1 are themes, TRIANGLE is
-     * favorite, CROSS launches, D-pad navigates). */
+     * START was unused (SELECT is poweroff, TRIANGLE is favorite, CROSS
+     * launches/confirms, D-pad navigates). */
     int overlayVisible = 0;
     int debugLoggingOn = 0; /* mc0:/launcher.log disk flush - off by default, toggled with SQUARE on the overlay */
 
@@ -535,6 +582,18 @@ int main(int argc, char *argv[])
      * quickProbe are ever rechecked - see device_mgr.h. */
     int rescanFrameCounter = 0;
 
+    /* M15 follow-up: -1 is a sentinel distinct from every real
+     * sceCdGetDiskType() return value (SCECdNODISC is 0x00, every other
+     * type is a positive enum value) - guarantees the disc-sync check
+     * below runs at least once on the very first status poll, syncing
+     * entries[] against whatever disc is already in the drive at boot. */
+    int lastDiskType = -1;
+
+    /* M15: a monotonic "launch order" counter - see config/metadata.h's
+     * lastLaunchOrder field. Persists for the process's whole lifetime,
+     * same as every other loop-persistent variable here. */
+    unsigned int launchOrderCounter = 0;
+
     while (1) {
         audioTick();
 
@@ -546,11 +605,8 @@ int main(int argc, char *argv[])
                 if (families[i].available != wasAvailable)
                     changed = 1;
             }
-            if (changed) {
+            if (changed)
                 rescanEntries(families, familyCount);
-                if (focus >= entryCount)
-                    focus = (entryCount > 0) ? entryCount - 1 : 0;
-            }
         }
         rescanFrameCounter = (rescanFrameCounter + 1) % 180;
 
@@ -567,6 +623,68 @@ int main(int argc, char *argv[])
              * once a second, right when this RPC ran). */
             static sceCdCLOCK clock __attribute__((aligned(64)));
             int diskType = sceCdGetDiskType();
+
+            /* M15 follow-up: detects a disc swap and re-syncs entries[]
+             * against it. This is driven by sceCdGetDiskType()'s own
+             * transitions (the authoritative libcdvd-level signal), not
+             * cdrom0's fileXioGetStat()-based `available` flag (M13's
+             * periodic device recheck) - a disc swap doesn't necessarily
+             * flip that flag at all, since cdvdfsv can keep reporting
+             * cdrom0:/ as present the whole time. Critically, this also
+             * waits on sceCdDiskReady() before trusting sceCdSearchFile/
+             * sceCdRead again (parseDiscBootPath, above) - without that
+             * handshake, those calls can return stale data cached from
+             * the *previous* disc rather than failing outright, which is
+             * exactly what was happening here: the swap was detected but
+             * SYSTEM.CNF kept reading back as the old disc's. */
+            if (diskType != lastDiskType) {
+                lastDiskType = diskType;
+
+                int isRealDisc = (diskType != SCECdNODISC && diskType != SCECdDETCT && diskType != SCECdDETCTCD &&
+                                   diskType != SCECdDETCTDVDS && diskType != SCECdDETCTDVDD);
+
+                int discIndex = -1;
+                {
+                    int j;
+                    for (j = 0; j < entryCount; j++) {
+                        if (entries[j].device == DEVICE_CDROM) {
+                            discIndex = j;
+                            break;
+                        }
+                    }
+                }
+
+                int changed = 0;
+                if (isRealDisc) {
+                    /* Bounded retry, not an indefinite block - matches
+                     * every other "wait for hardware" retry loop in this
+                     * codebase (device_mgr.c's probeUSB/probeNetwork).
+                     * sceCdDiskReady(1) is the non-blocking "check status
+                     * and return immediately" mode (mode 0 would block
+                     * the whole render loop until ready). */
+                    int ready = 0;
+                    int attempt;
+                    for (attempt = 0; attempt < 100 && !ready; attempt++) {
+                        if (sceCdDiskReady(1) == SCECdComplete)
+                            ready = 1;
+                    }
+
+                    if (ready) {
+                        char newDiscPath[APP_ENTRY_PATH_MAX];
+                        int found = (parseDiscBootPath(newDiscPath, sizeof(newDiscPath)) == 0);
+                        if (found && (discIndex < 0 || strcmp(entries[discIndex].path, newDiscPath) != 0))
+                            changed = 1;
+                        else if (!found && discIndex >= 0)
+                            changed = 1;
+                    }
+                } else if (discIndex >= 0) {
+                    changed = 1; /* disc removed - drop the stale entry */
+                }
+
+                if (changed)
+                    rescanEntries(families, familyCount);
+            }
+
             if (sceCdReadClock(&clock)) {
                 sprintf(statusLine, "%s | 20%02d-%02d-%02d %02d:%02d:%02d", diskTypeName(diskType),
                         bcdToDec(clock.year), bcdToDec(clock.month), bcdToDec(clock.day), bcdToDec(clock.hour),
@@ -617,198 +735,51 @@ int main(int argc, char *argv[])
          * expected to "return" to the loop on hardware, but PCSX2's own
          * behavior when a homebrew ELF calls this is untested territory
          * for this project, so no assumption is made about what happens
-         * next. */
+         * next. Kept as a global shortcut alongside the new System >
+         * Power row (ui/dashboard_ui.c) - both call the same
+         * poweroffShutdown(), neither disables the other. */
         if (edge & PAD_SELECT)
             poweroffShutdown();
 
-        /* M10: L1/R1 cycle between the bundled themes at runtime -
-         * switching is just changing which already-loaded Theme struct
-         * is "current" (see the boot-time themeLoad() calls above), so
-         * it's instant and allocates no new VRAM. */
-        if (edge & PAD_R1)
-            currentTheme = (currentTheme + 1) % THEME_COUNT;
-        if (edge & PAD_L1)
-            currentTheme = (currentTheme - 1 + THEME_COUNT) % THEME_COUNT;
-        Theme *theme = &themes[currentTheme];
+        /* M15: screen navigation/selection - dashboard_ui.c owns Home/
+         * Library/System's own focus state and reports back at most one
+         * action; the actual launch/favorite/poweroff side effects stay
+         * here, unchanged from before, so the existing, already-tested
+         * code paths (elfLoadAndExec's chain-load, metadataSave's CRC-
+         * trailer write) are untouched (plan section 14). */
+        UiAction action = dashboardUiHandleInput(&ui, edge, entries, metas, entryCount, families, familyCount);
 
-        if (entryCount > 0) {
-            int prevFocus = focus;
-            if (edge & PAD_RIGHT)
-                focus = (focus + 1) % entryCount;
-            if (edge & PAD_LEFT)
-                focus = (focus - 1 + entryCount) % entryCount;
-            if (edge & PAD_DOWN) {
-                int n = focus + GRID_COLS;
-                if (n < entryCount)
-                    focus = n;
-            }
-            if (edge & PAD_UP) {
-                int n = focus - GRID_COLS;
-                if (n >= 0)
-                    focus = n;
-            }
-            /* M14: a menu blip only when focus actually moved - this
-             * naturally stays silent at grid boundaries where UP/DOWN
-             * don't move focus (no `n < entryCount`/`n >= 0`), while
-             * LEFT/RIGHT's wraparound still counts as a real move. */
-            if (focus != prevFocus)
-                audioPlayBlip();
-            if (edge & PAD_TRIANGLE) {
-                metas[focus].favorite = !metas[focus].favorite;
-                metadataSave(entries[focus].path, &metas[focus]);
-            }
-            if (edge & PAD_CROSS) {
-                /* Persist the launch before handing off, not after - a
-                 * successful launch never returns here to record it. */
-                metas[focus].launchCount++;
-                metadataSave(entries[focus].path, &metas[focus]);
+        if (action.kind == UI_ACTION_TOGGLE_FAVORITE && action.entryIndex >= 0 && action.entryIndex < entryCount) {
+            metas[action.entryIndex].favorite = !metas[action.entryIndex].favorite;
+            metadataSave(entries[action.entryIndex].path, &metas[action.entryIndex]);
+        } else if (action.kind == UI_ACTION_LAUNCH && action.entryIndex >= 0 && action.entryIndex < entryCount) {
+            /* Persist the launch before handing off, not after - a
+             * successful launch never returns here to record it. */
+            metas[action.entryIndex].launchCount++;
+            metas[action.entryIndex].lastLaunchOrder = ++launchOrderCounter;
+            metadataSave(entries[action.entryIndex].path, &metas[action.entryIndex]);
 
-                logMsg("launching: %s", entries[focus].path);
+            logMsg("launching: %s", entries[action.entryIndex].path);
 
-                char *stage2Argv[2];
-                stage2Argv[0] = entries[focus].path;
-                stage2Argv[1] = "0"; /* reset_iop: false, the common case */
-                elfLoadAndExec("mc0:/stage2.elf", 0, 2, stage2Argv);
-                /* Not expected to return - if it does, the launch failed;
-                 * fall through and keep the browser up rather than
-                 * hanging (plan section 11's fallback philosophy). M13:
-                 * this used to be entirely silent - pressing X on a bad
-                 * ELF, or one whose device was removed since the boot-
-                 * time scan, produced no visible feedback at all,
-                 * indistinguishable from the launch attempt itself
-                 * hanging. Now shown via the status line for a few
-                 * seconds instead. */
-                logMsg("launch failed: %s", entries[focus].path);
-                launchFailedFramesLeft = 180;
-            }
+            char *stage2Argv[2];
+            stage2Argv[0] = entries[action.entryIndex].path;
+            stage2Argv[1] = "0"; /* reset_iop: false, the common case */
+            elfLoadAndExec("mc0:/stage2.elf", 0, 2, stage2Argv);
+            /* Not expected to return - if it does, the launch failed;
+             * fall through and keep the browser up rather than hanging
+             * (plan section 11's fallback philosophy). */
+            logMsg("launch failed: %s", entries[action.entryIndex].path);
+            launchFailedFramesLeft = 180;
+        } else if (action.kind == UI_ACTION_POWEROFF) {
+            poweroffShutdown();
         }
-
-        /* The routine per-frame clear stops at safeBottom now, leaving
-         * the status-line strip below it untouched except on the few
-         * frames right after its text actually changes (below) - part of
-         * the same diagnostic: a region that's touched every frame vs.
-         * one that's only touched on real change. */
-        if (theme->hasBackground) {
-            /* Stretched to fill the whole screen via UV mapping - the
-             * background's own baked pixel size doesn't need to match
-             * gsGlobal's runtime-detected resolution (theme/theme.c).
-             * Textured draws need the M7-confirmed blend-equation setup
-             * (PrimAlphaEnable alone isn't enough), same as bitmap_font.c.
-             * v1 is scaled to match the shortened destination height so
-             * the image doesn't stretch differently than intended - moot
-             * today since no bundled theme actually has a background. */
-            gsKit_set_primalpha(gsGlobal, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
-            gsKit_set_test(gsGlobal, GS_ATEST_OFF);
-            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
-            /* Neutral modulation: RGB 0xFF (matches bitmap_font.c's pure-
-             * white glyph pixels needing 0xFF to render untinted) and
-             * alpha 0x80, the GS's own 7-bit "fully opaque" value - not
-             * 0x80,0x80,0x80, which would multiplicatively halve the
-             * background's brightness. */
-            gsKit_prim_sprite_texture(gsGlobal, &theme->background, 0.0f, 0.0f, 0.0f, 0.0f, (float)gsGlobal->Width,
-                                       safeBottom, (float)theme->background.Width,
-                                       (float)theme->background.Height * (safeBottom / (float)gsGlobal->Height), 0,
-                                       GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00));
-            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
-            gsKit_set_test(gsGlobal, GS_ATEST_ON);
-            gsKit_set_primalpha(gsGlobal, GS_BLEND_BACK2FRONT, 0);
-        } else {
-            /* Every theme color here (bg/tile/focus) uses alpha=0x00 -
-             * never meant as "transparent", just "unused" on a flat-
-             * shaded, non-textured primitive. Disabling blending (below)
-             * wasn't enough on its own: alpha TESTING is a separate,
-             * earlier pipeline stage, and bitmapFontPrint() leaves
-             * GS_ATEST_ON as its "resting" state after every text draw.
-             * If that mode is configured to reject alpha=0 fragments
-             * (common for punch-through masking), every pixel of this
-             * fill gets discarded before blending is ever considered -
-             * explaining why disabling PrimAlphaEnable alone didn't fix
-             * the earlier ghosting. Disabling the alpha test too
-             * guarantees this fill actually writes. */
-            gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
-            gsKit_set_test(gsGlobal, GS_ATEST_OFF);
-            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
-            gsKit_prim_sprite(gsGlobal, 0.0f, 0.0f, (float)gsGlobal->Width, safeBottom, 0, theme->bgColor);
-            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
-            gsKit_set_test(gsGlobal, GS_ATEST_ON);
-            gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
-        }
-
-        for (i = 0; i < entryCount; i++) {
-            int col = i % GRID_COLS;
-            int row = i / GRID_COLS;
-            float x = marginX + col * (cellSize + gap);
-            float y = marginY + row * (cellSize + gap);
-
-            if (y + cellSize > safeBottom)
-                break; /* no scrolling yet - a later milestone's problem */
-
-            /* Same defensive opaque-fill guard as the background clear
-             * above - both blending AND alpha testing disabled, since a
-             * flat-shaded alpha=0x00 fill shouldn't be exposed to
-             * whatever state the last text draw left either stage in. */
-            gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
-            gsKit_set_test(gsGlobal, GS_ATEST_OFF);
-            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
-            gsKit_prim_sprite(gsGlobal, x, y, x + cellSize, y + cellSize, 1,
-                               i == focus ? theme->focusColor : theme->tileColor);
-            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
-            gsKit_set_test(gsGlobal, GS_ATEST_ON);
-            gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
-
-            /* Build the full "[*]name (count)" string first, then
-             * truncate to whatever fits the tile - a favorited, heavily-
-             * launched entry should lose its count/name tail before it
-             * loses the favorite marker, which is why the marker is
-             * prepended rather than appended. */
-            char full[80];
-            int fi = 0;
-            if (metas[i].favorite)
-                full[fi++] = '*';
-            const char *name = baseName(entries[i].path);
-            while (*name && fi < 60)
-                full[fi++] = *name++;
-            if (metas[i].launchCount > 0 && fi < 70)
-                fi += sprintf(full + fi, " (%d)", metas[i].launchCount);
-            full[fi] = '\0';
-
-            char label[64];
-            int len = 0;
-            while (full[len] && len < maxLabelChars)
-                len++;
-            memcpy(label, full, len);
-            label[len] = '\0';
-
-            if (fontOk)
-                bitmapFontPrint(gsGlobal, &font, x + 4.0f, y + cellSize - 20.0f, theme->labelColor, label);
-        }
-
-        /* Explicit strip clear, since the routine full-screen fill above
-         * stops at safeBottom and never touches this area - cleared here
-         * instead, right before (re)drawing the text, using the same
-         * guaranteed-opaque guards. Done unconditionally every frame,
-         * same as the background/tiles above: gsGlobal double-buffers via
-         * gsKit_sync_flip(), so a region only touched on *some* frames
-         * (as this used to be, redrawing only for a few frames right
-         * after the text changed) can leave stale text baked into
-         * whichever buffer didn't get the update in time - surfacing as
-         * old/new text clashing on flip. Redrawing every frame removes
-         * that failure mode entirely; the RTC/disc-status RPC itself is
-         * still only polled once a second via statusFrameCounter above,
-         * so this doesn't add any extra IOP round-trips. */
-        gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
-        gsKit_set_test(gsGlobal, GS_ATEST_OFF);
-        gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
-        gsKit_prim_sprite(gsGlobal, 0.0f, safeBottom, (float)gsGlobal->Width, (float)gsGlobal->Height, 0,
-                           theme->bgColor);
-        gsKit_set_test(gsGlobal, GS_ZTEST_ON);
-        gsKit_set_test(gsGlobal, GS_ATEST_ON);
-        gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
 
         /* Priority: disconnected controller > a recent launch failure >
          * the normal disc/RTC readout. Both overrides count down/reset
          * on their own regardless of whether text actually gets drawn
-         * this frame, so they behave correctly even if fontOk is false. */
+         * this frame, so they behave correctly even if fontOk is false.
+         * Computed before dashboardUiDraw() since the System screen's
+         * own "Disc" row also shows this same line (ui/dashboard_ui.c). */
         const char *lineToShow = statusLine;
         if (disconnectFrames > 30) {
             strcpy(overrideMsg, "controller disconnected");
@@ -819,8 +790,21 @@ int main(int argc, char *argv[])
             launchFailedFramesLeft--;
         }
 
+        /* M15: the animated PSBBN-style background plus whichever of
+         * Home/Library/System is current - replaces the old flat-color/
+         * theme-background clear and 4-column grid entirely (see
+         * ui/dashboard_ui.c and ui/background.c). */
+        dashboardUiDraw(&ui, gsGlobal, &font, fontOk, themes, entries, metas, entryCount, families, familyCount,
+                         &iconCache, lineToShow);
+
+        /* Persistent status-line strip, below the title-safe content
+         * area dashboard_ui.c just drew into - main.c's own since it
+         * spans every screen identically and isn't part of any one
+         * screen's content (plan section 4's reserved bottom row). */
+        layoutFillOpaque(gsGlobal, 0.0f, rect.safeBottom, rect.screenW, rect.screenH, 0, themes[ui.currentTheme].bgColor);
         if (fontOk)
-            bitmapFontPrint(gsGlobal, &font, marginX, safeBottom + 2.0f, theme->labelColor, lineToShow);
+            bitmapFontPrint(gsGlobal, &font, rect.marginX, rect.safeBottom + 2.0f, themes[ui.currentTheme].labelColor,
+                             lineToShow);
 
         /* M13 debug overlay (toggled with START) - a plain, opaque dark
          * panel over the whole safe area, showing the most recent log
@@ -830,29 +814,23 @@ int main(int argc, char *argv[])
          * equation, M11's Z-test discovery); a solid panel is simplest
          * and needs none of that. */
         if (overlayVisible) {
-            gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
-            gsKit_set_test(gsGlobal, GS_ATEST_OFF);
-            gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
-            gsKit_prim_sprite(gsGlobal, marginX, marginY, marginX + safeW, safeBottom, 1,
-                               GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
-            gsKit_set_test(gsGlobal, GS_ZTEST_ON);
-            gsKit_set_test(gsGlobal, GS_ATEST_ON);
-            gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
+            layoutFillOpaque(gsGlobal, rect.marginX, rect.marginY, rect.marginX + rect.safeW, rect.safeBottom, 1,
+                              GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
 
             if (fontOk) {
                 char header[48];
                 sprintf(header, "[SQUARE] disk logging: %s", debugLoggingOn ? "ON" : "OFF");
-                bitmapFontPrint(gsGlobal, &font, marginX + 4.0f, marginY + 4.0f,
+                bitmapFontPrint(gsGlobal, &font, rect.marginX + 4.0f, rect.marginY + 4.0f,
                                 GS_SETREG_RGBAQ(0xFF, 0xE0, 0x80, 0x80, 0x00), header);
 
                 int n = logLineCount();
-                int maxRows = (int)((safeBottom - marginY) / 16.0f) - 2;
+                int maxRows = (int)((rect.safeBottom - rect.marginY) / 16.0f) - 2;
                 int startIdx = (n > maxRows) ? n - maxRows : 0;
                 int row = 0;
                 while (startIdx + row < n) {
                     const char *line = logLine(startIdx + row);
                     if (line)
-                        bitmapFontPrint(gsGlobal, &font, marginX + 4.0f, marginY + 4.0f + (row + 1) * 16.0f,
+                        bitmapFontPrint(gsGlobal, &font, rect.marginX + 4.0f, rect.marginY + 4.0f + (row + 1) * 16.0f,
                                          GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00), line);
                     row++;
                 }

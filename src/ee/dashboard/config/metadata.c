@@ -59,6 +59,7 @@ void metadataLoad(const char *elfPath, AppMetadata *out)
 {
     out->launchCount = 0;
     out->favorite = 0;
+    out->lastLaunchOrder = 0;
 
     char cfgPath[METADATA_MAX_PATH];
     buildPath(cfgPath, elfPath, ".cfg");
@@ -100,6 +101,8 @@ void metadataLoad(const char *elfPath, AppMetadata *out)
                 out->launchCount = atoi(value);
             else if (strcmp(key, "favorite") == 0)
                 out->favorite = atoi(value);
+            else if (strcmp(key, "last_launch_order") == 0)
+                out->lastLaunchOrder = (unsigned int)strtoul(value, NULL, 10);
         }
         line = strtok(NULL, "\n");
     }
@@ -113,7 +116,8 @@ int metadataSave(const char *elfPath, const AppMetadata *meta)
     buildPath(tmpPath, elfPath, ".cfg.tmp");
 
     char content[METADATA_MAX_CONTENT];
-    int dataLen = sprintf(content, "launch_count=%d\nfavorite=%d\n", meta->launchCount, meta->favorite);
+    int dataLen = sprintf(content, "launch_count=%d\nfavorite=%d\nlast_launch_order=%u\n", meta->launchCount,
+                           meta->favorite, meta->lastLaunchOrder);
 
     unsigned int crc = crc32((const unsigned char *)content, dataLen);
     int totalLen = dataLen + sprintf(content + dataLen, "crc32=%08X\n", crc);
