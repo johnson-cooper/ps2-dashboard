@@ -38,6 +38,45 @@ static int loadModule(const char *path)
     return SifLoadModule(path, 0, NULL);
 }
 
+/* IOP modules embedded via bin2c'd package artifacts (embedded/ *_irx.c,
+ * generated straight from the installed ps2sdk packages' own prebuilt
+ * driver binaries - see main.c's own comment for why this replaces
+ * loading from a "host:" path, which only resolves under whatever
+ * emulator/dev setup happens to map "host:" to this project's own
+ * modules/ directory - a real, confirmed boot failure otherwise (a
+ * PCSX2 launch config pointing "host:" at the built ELF's own directory
+ * instead of the project root left iomanX.irx/fileXio.irx unable to
+ * load at all, hanging fileXioInit() before a single frame was drawn). */
+static int loadModuleBuf(void *buf, unsigned int size)
+{
+    return SifExecModuleBuffer(buf, size, 0, NULL, NULL);
+}
+
+extern unsigned char mcman_irx[];
+extern unsigned int size_mcman_irx;
+extern unsigned char mcserv_irx[];
+extern unsigned int size_mcserv_irx;
+extern unsigned char usbd_irx[];
+extern unsigned int size_usbd_irx;
+extern unsigned char usbhdfsd_irx[];
+extern unsigned int size_usbhdfsd_irx;
+extern unsigned char cdvdman_irx[];
+extern unsigned int size_cdvdman_irx;
+extern unsigned char cdvdfsv_irx[];
+extern unsigned int size_cdvdfsv_irx;
+extern unsigned char ps2dev9_irx[];
+extern unsigned int size_ps2dev9_irx;
+extern unsigned char ps2atad_irx[];
+extern unsigned int size_ps2atad_irx;
+extern unsigned char netman_irx[];
+extern unsigned int size_netman_irx;
+extern unsigned char smap_irx[];
+extern unsigned int size_smap_irx;
+extern unsigned char ps2ips_irx[];
+extern unsigned int size_ps2ips_irx;
+extern unsigned char smbman_irx[];
+extern unsigned int size_smbman_irx;
+
 static void busyWait(int iterations)
 {
     volatile int i;
@@ -65,9 +104,9 @@ static int loadMC(DeviceFamily *self)
         return 0;
 
     loadModule("rom0:SIO2MAN");
-    if (loadModule("host:modules/mcman.irx") < 0)
+    if (loadModuleBuf(mcman_irx, size_mcman_irx) < 0)
         return -1;
-    if (loadModule("host:modules/mcserv.irx") < 0)
+    if (loadModuleBuf(mcserv_irx, size_mcserv_irx) < 0)
         return -1;
 
     mcModulesLoaded = 1;
@@ -79,9 +118,9 @@ static int loadMC(DeviceFamily *self)
 static int loadUSB(DeviceFamily *self)
 {
     (void)self;
-    if (loadModule("host:modules/usbd.irx") < 0)
+    if (loadModuleBuf(usbd_irx, size_usbd_irx) < 0)
         return -1;
-    if (loadModule("host:modules/usbhdfsd.irx") < 0)
+    if (loadModuleBuf(usbhdfsd_irx, size_usbhdfsd_irx) < 0)
         return -1;
     return 0;
 }
@@ -114,9 +153,9 @@ static int probeUSB(DeviceFamily *self)
 static int loadCD(DeviceFamily *self)
 {
     (void)self;
-    if (loadModule("host:modules/cdvdman.irx") < 0)
+    if (loadModuleBuf(cdvdman_irx, size_cdvdman_irx) < 0)
         return -1;
-    return loadModule("host:modules/cdvdfsv.irx") < 0 ? -1 : 0;
+    return loadModuleBuf(cdvdfsv_irx, size_cdvdfsv_irx) < 0 ? -1 : 0;
 }
 
 /* --- Internal HDD (hdd0:) --------------------------------------------
@@ -129,7 +168,7 @@ static int loadDev9(void)
 {
     if (dev9Loaded)
         return 0;
-    if (loadModule("host:modules/ps2dev9.irx") < 0)
+    if (loadModuleBuf(ps2dev9_irx, size_ps2dev9_irx) < 0)
         return -1;
     dev9Loaded = 1;
     return 0;
@@ -158,7 +197,7 @@ static int loadHDD(DeviceFamily *self)
      * attempted. */
     if (loadDev9() < 0)
         return -1;
-    if (loadModule("host:modules/ps2atad.irx") < 0)
+    if (loadModuleBuf(ps2atad_irx, size_ps2atad_irx) < 0)
         return -1;
     return 0;
 }
@@ -210,11 +249,11 @@ static int loadNetwork(DeviceFamily *self)
     (void)self;
     if (loadDev9() < 0)
         return -1;
-    if (loadModule("host:modules/netman.irx") < 0)
+    if (loadModuleBuf(netman_irx, size_netman_irx) < 0)
         return -1;
-    if (loadModule("host:modules/smap.irx") < 0)
+    if (loadModuleBuf(smap_irx, size_smap_irx) < 0)
         return -1;
-    if (loadModule("host:modules/ps2ips.irx") < 0)
+    if (loadModuleBuf(ps2ips_irx, size_ps2ips_irx) < 0)
         return -1;
 
     if (NetManInit() < 0)
@@ -271,7 +310,7 @@ static int probeNetwork(DeviceFamily *self)
 static int loadSmb(DeviceFamily *self)
 {
     (void)self;
-    return loadModule("host:modules/smbman.irx") < 0 ? -1 : 0;
+    return loadModuleBuf(smbman_irx, size_smbman_irx) < 0 ? -1 : 0;
 }
 
 static int networkAvailable(void)

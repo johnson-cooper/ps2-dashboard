@@ -11,6 +11,15 @@ extern unsigned int size_sfx_blip_pcm;
 extern unsigned char music_adpcm[];
 extern unsigned int size_music_adpcm;
 
+/* IOP modules embedded via bin2c'd package artifacts (see
+ * embedded/libsd_irx.c, embedded/audsrv_irx.c) - see main.c's own
+ * comment on why these are embedded directly rather than loaded from a
+ * "host:" path. */
+extern unsigned char libsd_irx[];
+extern unsigned int size_libsd_irx;
+extern unsigned char audsrv_irx[];
+extern unsigned int size_audsrv_irx;
+
 /* The embedded blip's real format (menu_button_select.wav, downmixed to
  * mono - it shipped stereo). */
 #define BLIP_SAMPLE_RATE 44100
@@ -36,11 +45,11 @@ static int blipStopFramesLeft = 0;
 
 void audioInit(void)
 {
-    if (SifLoadModule("host:modules/libsd.irx", 0, NULL) < 0) {
+    if (SifExecModuleBuffer(libsd_irx, size_libsd_irx, 0, NULL, NULL) < 0) {
         logMsg("audio: libsd.irx load failed");
         return;
     }
-    if (SifLoadModule("host:modules/audsrv.irx", 0, NULL) < 0) {
+    if (SifExecModuleBuffer(audsrv_irx, size_audsrv_irx, 0, NULL, NULL) < 0) {
         logMsg("audio: audsrv.irx load failed");
         return;
     }

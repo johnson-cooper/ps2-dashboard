@@ -1,6 +1,7 @@
 #include <kernel.h>
 #include <sifrpc.h>
 #include <loadfile.h>
+#include <sbv_patches.h>
 #include <gsKit.h>
 #include <dmaKit.h>
 #include <libpad.h>
@@ -93,6 +94,26 @@ extern unsigned char target_elf[];
 extern unsigned int size_target_elf;
 extern unsigned char stage2_elf[];
 extern unsigned int size_stage2_elf;
+
+/* IOP modules embedded via bin2c'd package artifacts (embedded/ *_irx.c) -
+ * loaded into the IOP with SifExecModuleBuffer instead of
+ * SifLoadModule("host:modules/...") so the dashboard no longer depends
+ * on a "host:" device resolving to this project's own modules/
+ * directory - a real, confirmed boot failure otherwise: a PCSX2 launch
+ * config that maps "host:" to the built ELF's own directory (rather
+ * than the project root) leaves iomanX.irx/fileXio.irx unable to load
+ * at all (SifLoadModule returns a negative module id), after which
+ * fileXioInit() hangs waiting for an IOP-side server that was never
+ * started - the screen never gets past the very first, still-black
+ * framebuffer because the boot sequence never reaches the render loop.
+ * Embedding the modules directly in the ELF removes this "host:" path
+ * dependency entirely, on real hardware and any emulator alike. */
+extern unsigned char iomanX_irx[];
+extern unsigned int size_iomanX_irx;
+extern unsigned char fileXio_irx[];
+extern unsigned int size_fileXio_irx;
+extern unsigned char poweroff_irx[];
+extern unsigned int size_poweroff_irx;
 
 #define MAX_ENTRIES 32
 
@@ -412,10 +433,18 @@ int main(int argc, char *argv[])
 {
     SifInitRpc(0);
 
+    /* The stock rom0:LOADFILE RPC service (still resident from BIOS boot
+     * at this point) can only load modules by path - SifExecModuleBuffer
+     * (loading an IRX straight out of EE RAM, used below for every
+     * embedded module) silently hangs without this patch applied first,
+     * per sbv_patches.h's own doc comment and every real ps2sdk sample
+     * that uses it. */
+    sbv_patch_enable_lmb();
+
     SifLoadModule("rom0:SIO2MAN", 0, NULL);
     SifLoadModule("rom0:PADMAN", 0, NULL);
-    SifLoadModule("host:modules/iomanX.irx", 0, NULL);
-    SifLoadModule("host:modules/fileXio.irx", 0, NULL);
+    SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
+    SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
     fileXioInit();
     fileXioSetRWBufferSize(128 * 1024);
 
@@ -426,7 +455,7 @@ int main(int argc, char *argv[])
      * a device family - unlike cdvdman.irx (loaded lazily by the
      * "cdrom0" device_mgr.c family below), a poweroff button should work
      * regardless of which devices are actually present. */
-    SifLoadModule("host:modules/poweroff.irx", 0, NULL);
+    SifExecModuleBuffer(poweroff_irx, size_poweroff_irx, 0, NULL, NULL);
     poweroffInit();
 
     /* M14: optional sound - a failure anywhere in here (module load,

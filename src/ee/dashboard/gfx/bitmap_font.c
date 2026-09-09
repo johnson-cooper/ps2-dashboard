@@ -4,48 +4,126 @@
 #include <string.h>
 #include <malloc.h>
 
-extern unsigned char font_uLE[];
+#include <ft2build.h>
+#include FT_FREETYPE_H
 
-#define FONT_COLS 16
-#define FONT_ROWS 16
-#define GLYPH_W 8
-#define GLYPH_H 16
+extern unsigned char noto_sans_ttf[];
+extern unsigned int size_noto_sans_ttf;
+
+#define FONT_PIXEL_SIZE 16
+#define ATLAS_COLS 10
+#define ATLAS_ROWS ((BITMAP_FONT_GLYPH_COUNT + ATLAS_COLS - 1) / ATLAS_COLS)
 
 int bitmapFontInit(BitmapFont *font, GSGLOBAL *gsGlobal)
 {
     memset(font, 0, sizeof(*font));
-    font->cols = FONT_COLS;
-    font->rows = FONT_ROWS;
-    font->glyphW = GLYPH_W;
-    font->glyphH = GLYPH_H;
 
-    int atlasW = FONT_COLS * GLYPH_W;
-    int atlasH = FONT_ROWS * GLYPH_H;
-
-    unsigned char *pixels = (unsigned char *)memalign(64, atlasW * atlasH * 4);
-    if (!pixels)
+    FT_Library ftLib;
+    if (FT_Init_FreeType(&ftLib) != 0)
         return -1;
-    memset(pixels, 0, atlasW * atlasH * 4);
 
-    int ch;
-    for (ch = 0; ch < FONT_COLS * FONT_ROWS; ch++) {
-        int originX = (ch % FONT_COLS) * GLYPH_W;
-        int originY = (ch / FONT_COLS) * GLYPH_H;
+    FT_Face face;
+    if (FT_New_Memory_Face(ftLib, noto_sans_ttf, (FT_Long)size_noto_sans_ttf, 0, &face) != 0) {
+        FT_Done_FreeType(ftLib);
+        return -1;
+    }
+
+    if (FT_Set_Pixel_Sizes(face, 0, FONT_PIXEL_SIZE) != 0) {
+        FT_Done_Face(face);
+        FT_Done_FreeType(ftLib);
+        return -1;
+    }
+
+    font->lineHeight = (int)(face->size->metrics.height >> 6);
+    font->ascender = (int)(face->size->metrics.ascender >> 6);
+
+    /* Two passes: rasterize every glyph first and copy its bitmap out
+     * (FT reuses the same internal buffer on every FT_Load_Char call, so
+     * a glyph's pixels have to be copied out before loading the next
+     * one) while measuring the largest glyph, THEN size and pack the
+     * atlas - guessing a fixed cell size up front would either clip a
+     * tall/wide glyph or waste VRAM padding every cell to fit one. */
+    unsigned char *glyphBitmaps[BITMAP_FONT_GLYPH_COUNT];
+    memset(glyphBitmaps, 0, sizeof(glyphBitmaps));
+    int cellW = 1, cellH = 1;
+
+    int i;
+    for (i = 0; i < BITMAP_FONT_GLYPH_COUNT; i++) {
+        unsigned long c = (unsigned long)(BITMAP_FONT_FIRST_GLYPH + i);
+        GlyphMetrics *gm = &font->glyphs[i];
+
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER) != 0)
+            continue;
+
+        FT_GlyphSlot slot = face->glyph;
+        int w = (int)slot->bitmap.width;
+        int h = (int)slot->bitmap.rows;
+
+        gm->width = (short)w;
+        gm->height = (short)h;
+        gm->bearingX = (short)slot->bitmap_left;
+        gm->bearingY = (short)slot->bitmap_top;
+        gm->advance = (short)(slot->advance.x >> 6);
+
+        if (w > 0 && h > 0) {
+            unsigned char *copy = (unsigned char *)malloc((size_t)(w * h));
+            if (copy) {
+                /* FT's own row pitch can exceed the bitmap width (row
+                 * padding) - copy row by row rather than assuming
+                 * pitch == width. */
+                int row;
+                for (row = 0; row < h; row++)
+                    memcpy(copy + row * w, slot->bitmap.buffer + row * slot->bitmap.pitch, (size_t)w);
+                glyphBitmaps[i] = copy;
+            }
+        }
+
+        if (w > cellW)
+            cellW = w;
+        if (h > cellH)
+            cellH = h;
+    }
+
+    int atlasW = ATLAS_COLS * cellW;
+    int atlasH = ATLAS_ROWS * cellH;
+
+    unsigned char *pixels = (unsigned char *)memalign(64, (size_t)(atlasW * atlasH * 4));
+    if (!pixels) {
+        for (i = 0; i < BITMAP_FONT_GLYPH_COUNT; i++)
+            free(glyphBitmaps[i]);
+        FT_Done_Face(face);
+        FT_Done_FreeType(ftLib);
+        return -1;
+    }
+    memset(pixels, 0, (size_t)(atlasW * atlasH * 4));
+
+    for (i = 0; i < BITMAP_FONT_GLYPH_COUNT; i++) {
+        GlyphMetrics *gm = &font->glyphs[i];
+        int originX = (i % ATLAS_COLS) * cellW;
+        int originY = (i / ATLAS_COLS) * cellH;
+        gm->atlasX = (short)originX;
+        gm->atlasY = (short)originY;
+
+        if (!glyphBitmaps[i])
+            continue;
 
         int gy;
-        for (gy = 0; gy < GLYPH_H; gy++) {
-            unsigned char row = font_uLE[ch * GLYPH_H + gy];
+        for (gy = 0; gy < gm->height; gy++) {
             int gx;
-            for (gx = 0; gx < GLYPH_W; gx++) {
-                int bit = (row >> (7 - gx)) & 1;
+            for (gx = 0; gx < gm->width; gx++) {
+                unsigned char a = glyphBitmaps[i][gy * gm->width + gx];
                 unsigned char *p = pixels + ((originY + gy) * atlasW + (originX + gx)) * 4;
                 p[0] = 0xFF;
                 p[1] = 0xFF;
                 p[2] = 0xFF;
-                p[3] = bit ? 0xFF : 0x00;
+                p[3] = a;
             }
         }
+        free(glyphBitmaps[i]);
     }
+
+    FT_Done_Face(face);
+    FT_Done_FreeType(ftLib);
 
     font->texture.Width = atlasW;
     font->texture.Height = atlasH;
@@ -62,9 +140,9 @@ int bitmapFontInit(BitmapFont *font, GSGLOBAL *gsGlobal)
      * against the real, hard 4MB VRAM ceiling (measured in M7) instead
      * of guessing at a specific error sentinel value. The font atlas is
      * the very first VRAM allocation after the screen/Z buffers, so this
-     * should never actually trip in practice, but main.c's caller now
-     * checks this return and degrades to a text-free UI rather than
-     * silently corrupting whatever VRAM region this overflowed into. */
+     * should never actually trip in practice, but main.c's caller checks
+     * this return and degrades to a text-free UI rather than silently
+     * corrupting whatever VRAM region this overflowed into. */
     if (font->texture.Vram + vramSize > 0x00400000) {
         free(pixels);
         return -1;
@@ -107,35 +185,56 @@ void bitmapFontPrint(GSGLOBAL *gsGlobal, BitmapFont *font, float x, float y, u64
     while (*p) {
         if (*p == '\n') {
             cx = x;
-            cy += font->glyphH;
+            cy += font->lineHeight;
             p++;
             continue;
         }
 
-        int col = *p % font->cols;
-        int row = *p / font->cols;
-        float u0 = (float)(col * font->glyphW);
-        float v0 = (float)(row * font->glyphH);
+        if (*p >= BITMAP_FONT_FIRST_GLYPH && *p < BITMAP_FONT_FIRST_GLYPH + BITMAP_FONT_GLYPH_COUNT) {
+            const GlyphMetrics *gm = &font->glyphs[*p - BITMAP_FONT_FIRST_GLYPH];
 
-        /* Glyphs are packed edge-to-edge in the atlas with no gutter
-         * between cells - an exact [u0, u0+glyphW) UV rectangle can have
-         * its far edge round, under GS nearest-neighbor sampling, into
-         * the first texel column/row of the *next* glyph in the atlas.
-         * Invisible on static text (the sliver doesn't change), but very
-         * visible the instant a character does change (a ticking clock,
-         * a swapped disc name) since the bled-in sliver changes with it.
-         * Insetting the far edge by a fraction of a texel keeps sampling
-         * inside the intended cell without shrinking the glyph's actual
-         * on-screen size (only which texels get read changes, not the
-         * destination quad). */
-        gsKit_prim_sprite_texture(gsGlobal, &font->texture, cx, cy, u0, v0, cx + font->glyphW, cy + font->glyphH,
-                                   u0 + font->glyphW - 0.1f, v0 + font->glyphH - 0.1f, 1, color);
+            if (gm->width > 0 && gm->height > 0) {
+                float gx = cx + gm->bearingX;
+                float gy = cy + font->ascender - gm->bearingY;
+                float u0 = (float)gm->atlasX;
+                float v0 = (float)gm->atlasY;
 
-        cx += font->glyphW;
+                /* Glyphs are packed edge-to-edge in the atlas with no
+                 * gutter between cells - an exact [u0, u0+width) UV
+                 * rectangle can have its far edge round, under GS
+                 * nearest-neighbor sampling, into the first texel
+                 * column/row of the next glyph in the atlas. Invisible on
+                 * static text (the sliver doesn't change), but very
+                 * visible the instant a character does change (a ticking
+                 * clock, a swapped disc name) since the bled-in sliver
+                 * changes with it. Insetting the far edge by a fraction
+                 * of a texel keeps sampling inside the intended cell
+                 * without shrinking the glyph's actual on-screen size
+                 * (only which texels get read changes, not the
+                 * destination quad). */
+                gsKit_prim_sprite_texture(gsGlobal, &font->texture, gx, gy, u0, v0, gx + gm->width, gy + gm->height,
+                                           u0 + gm->width - 0.1f, v0 + gm->height - 0.1f, 1, color);
+            }
+
+            cx += gm->advance;
+        }
+
         p++;
     }
 
     gsKit_set_test(gsGlobal, GS_ZTEST_ON);
     gsKit_set_test(gsGlobal, GS_ATEST_ON);
     gsKit_set_primalpha(gsGlobal, GS_BLEND_BACK2FRONT, 0);
+}
+
+int bitmapFontTextWidth(const BitmapFont *font, const char *text)
+{
+    int width = 0;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p && *p != '\n') {
+        if (*p >= BITMAP_FONT_FIRST_GLYPH && *p < BITMAP_FONT_FIRST_GLYPH + BITMAP_FONT_GLYPH_COUNT)
+            width += font->glyphs[*p - BITMAP_FONT_FIRST_GLYPH].advance;
+        p++;
+    }
+    return width;
 }

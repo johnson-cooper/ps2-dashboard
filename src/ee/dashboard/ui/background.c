@@ -144,14 +144,19 @@ void backgroundDraw(const Background *bg, GSGLOBAL *gsGlobal)
         gsKit_set_test(gsGlobal, GS_ATEST_OFF);
         gsKit_set_test(gsGlobal, GS_ZTEST_OFF);
 
-        /* Top face - parallelogram above/behind the front face. */
-        gsKit_prim_quad(gsGlobal, cx, cy, cx + s, cy, cx + s + skew, cy - topH, cx + skew, cy - topH, 0,
+        /* Top face - parallelogram above/behind the front face. gsKit_prim_quad
+         * emits its 4 vertices straight into a GS_PRIM_TRIANGLE_STRIP (v1,v2,v3
+         * then v2,v3,v4) with no reordering, so they must be given in "Z"/
+         * zigzag order (v1,v2 one edge, v4,v3 the opposite edge) - NOT walked
+         * around the quad's perimeter. Perimeter order makes the two triangles
+         * overlap on one diagonal half and leave the other half unfilled. */
+        gsKit_prim_quad(gsGlobal, cx, cy, cx + s, cy, cx + skew, cy - topH, cx + s + skew, cy - topH, 0,
                          GS_SETREG_RGBAQ(topR, topG, topB, topA, 0x00));
         /* Front face - the plain camera-facing square. */
-        gsKit_prim_quad(gsGlobal, cx, cy, cx + s, cy, cx + s, cy + s, cx, cy + s, 0,
+        gsKit_prim_quad(gsGlobal, cx, cy, cx + s, cy, cx, cy + s, cx + s, cy + s, 0,
                          GS_SETREG_RGBAQ(frontR, frontG, frontB, frontA, 0x00));
         /* Right/side face - parallelogram to the right of the front face. */
-        gsKit_prim_quad(gsGlobal, cx + s, cy, cx + s + skew, cy - topH, cx + s + skew, cy - topH + s, cx + s, cy + s,
+        gsKit_prim_quad(gsGlobal, cx + s, cy, cx + s + skew, cy - topH, cx + s, cy + s, cx + s + skew, cy - topH + s,
                          0, GS_SETREG_RGBAQ(sideR, sideG, sideB, sideA, 0x00));
 
         gsKit_set_test(gsGlobal, GS_ZTEST_ON);

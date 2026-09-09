@@ -3,6 +3,8 @@
 
 #include <gsKit.h>
 
+#include "../gfx/bitmap_font.h"
+
 /* Small, shared layout/draw helpers (plan section 4/5) - a normalized
  * title-safe rect computed once at boot (same numbers main.c already
  * used through M14, just factored out so every screen module shares one
@@ -48,7 +50,17 @@ void layoutFillBlended(GSGLOBAL *gsGlobal, float x0, float y0, float x1, float y
  * within `maxChars` 8px-wide bitmap-font glyphs - the exact
  * char-counting logic main.c used inline for grid labels through M14,
  * factored out so Home/Library/System all share it instead of each
- * re-deriving their own. */
+ * re-deriving their own. Stale now that bitmap_font.c's glyphs are
+ * proportional (see layoutTruncateToWidth below) - kept only for any
+ * caller that still wants a plain character-count cap. */
 void layoutTruncateToChars(char *out, int outSize, const char *text, int maxChars);
+
+/* Truncates `text` in place (via `out`, at most outSize-1 chars) to the
+ * longest prefix whose real, measured width (bitmapFontTextWidth, using
+ * `font`'s actual per-glyph advances) is still <= maxWidthPx - the
+ * proportional-font replacement for layoutTruncateToChars's "assume 8px
+ * per glyph" arithmetic, which under- or over-fits text now that glyphs
+ * have real, varying advance widths. */
+void layoutTruncateToWidth(char *out, int outSize, const char *text, const BitmapFont *font, float maxWidthPx);
 
 #endif

@@ -20,6 +20,7 @@
 #include <kernel.h>
 #include <sifrpc.h>
 #include <loadfile.h>
+#include <sbv_patches.h>
 #include <gsKit.h>
 #include <dmaKit.h>
 
@@ -46,6 +47,17 @@ extern unsigned int size_icon_orange_png;
 extern unsigned char icon_white_png[];
 extern unsigned int size_icon_white_png;
 
+/* IOP modules embedded via bin2c'd package artifacts - see dashboard's
+ * main.c for why this replaces loading modules from a "host:" path. */
+extern unsigned char iomanX_irx[];
+extern unsigned int size_iomanX_irx;
+extern unsigned char fileXio_irx[];
+extern unsigned int size_fileXio_irx;
+extern unsigned char mcman_irx[];
+extern unsigned int size_mcman_irx;
+extern unsigned char mcserv_irx[];
+extern unsigned int size_mcserv_irx;
+
 #define DEBUG_INFO_ADDR 0x00090000
 
 static void writeFile(const char *path, const void *data, unsigned int size)
@@ -61,11 +73,15 @@ int main(int argc, char *argv[])
 {
     SifInitRpc(0);
 
+    /* See dashboard's main.c for why this is required before any
+     * SifExecModuleBuffer call. */
+    sbv_patch_enable_lmb();
+
     SifLoadModule("rom0:SIO2MAN", 0, NULL);
-    SifLoadModule("host:modules/iomanX.irx", 0, NULL);
-    SifLoadModule("host:modules/fileXio.irx", 0, NULL);
-    SifLoadModule("host:modules/mcman.irx", 0, NULL);
-    SifLoadModule("host:modules/mcserv.irx", 0, NULL);
+    SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
+    SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
+    SifExecModuleBuffer(mcman_irx, size_mcman_irx, 0, NULL, NULL);
+    SifExecModuleBuffer(mcserv_irx, size_mcserv_irx, 0, NULL, NULL);
     fileXioInit();
     fileXioSetRWBufferSize(128 * 1024);
 

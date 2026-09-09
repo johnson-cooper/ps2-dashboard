@@ -296,8 +296,17 @@ static void drawHome(DashboardUi *ui, GSGLOBAL *gs, BitmapFont *font, int fontOk
         u64 color = focused ? COLOR_WHITE : (items[i].enabled ? COLOR_CYAN : COLOR_DIM);
         if (fontOk) {
             bitmapFontPrint(gs, font, x, y, color, items[i].label);
-            if (items[i].detail[0])
-                bitmapFontPrint(gs, font, x + 220.0f, y, COLOR_DIM, items[i].detail);
+            if (items[i].detail[0]) {
+                /* items[i].detail can be an arbitrary app title (up to 40
+                 * chars, from buildHomeItems) - at this column's real
+                 * pixel budget (safe area's right edge minus the column's
+                 * own x offset), not every 40-char title fits under the
+                 * new proportional font, so re-truncate to the real
+                 * measured width before drawing. */
+                char detail[64];
+                layoutTruncateToWidth(detail, sizeof(detail), items[i].detail, font, rect->safeW - 220.0f);
+                bitmapFontPrint(gs, font, x + 220.0f, y, COLOR_DIM, detail);
+            }
         }
         y += rowH;
     }
@@ -417,7 +426,7 @@ static void drawLibrary(DashboardUi *ui, GSGLOBAL *gs, BitmapFont *font, int fon
 
         if (fontOk) {
             char label[24];
-            layoutTruncateToChars(label, sizeof(label), entries[idx].title, (int)(cellSize / 8.0f) - 1);
+            layoutTruncateToWidth(label, sizeof(label), entries[idx].title, font, cellSize - 8.0f);
             bitmapFontPrint(gs, font, tx + 4.0f, ty + cellSize - 18.0f, focused ? COLOR_WHITE : COLOR_CYAN, label);
         }
     }
@@ -441,7 +450,7 @@ static void drawLibrary(DashboardUi *ui, GSGLOBAL *gs, BitmapFont *font, int fon
                 metas[idx].launchCount == 1 ? "" : "es");
 
         char detail[128];
-        layoutTruncateToChars(detail, sizeof(detail), full, (int)(rect->safeW / 8.0f));
+        layoutTruncateToWidth(detail, sizeof(detail), full, font, rect->safeW);
         if (fontOk)
             bitmapFontPrint(gs, font, x0, rect->safeBottom - 18.0f, COLOR_DIM, detail);
     } else if (fontOk) {
@@ -494,7 +503,7 @@ static void drawSystem(DashboardUi *ui, GSGLOBAL *gs, BitmapFont *font, int font
                     familyAvailable(families, familyCount, "mc1") ? "Ready" : "None");
             break;
         case 6:
-            layoutTruncateToChars(detail, sizeof(detail), statusLine, 60);
+            layoutTruncateToWidth(detail, sizeof(detail), statusLine, font, rect->safeW - 200.0f);
             break;
         case 7:
             strcpy(detail, "Press CROSS to shut down");

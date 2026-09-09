@@ -3,9 +3,9 @@ project: ps2launcher
 targets:
   - name: dashboard
     type: ee
-    sources: [src/ee/dashboard/main.c, src/ee/dashboard/app/app_entry.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/gfx/ps2_icon.c, src/ee/dashboard/gfx/icon_cache.c, src/ee/dashboard/gfx/fallback_icons.c, src/ee/dashboard/ui/layout.c, src/ee/dashboard/ui/background.c, src/ee/dashboard/ui/dashboard_ui.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/log/log.c, src/ee/dashboard/audio/audio.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c, src/ee/dashboard/embedded/sfx_blip_pcm.c, src/ee/dashboard/embedded/music_adpcm.c]
-    headers: [common]
-    libs: [filexio, gskit, dmakit, pad, png, z, poweroff, cdvd, netman, ps2ips, audsrv]
+    sources: [src/ee/dashboard/main.c, src/ee/dashboard/app/app_entry.c, src/ee/dashboard/device/device_mgr.c, src/ee/common/elfloader.c, src/ee/dashboard/gfx/bitmap_font.c, src/ee/dashboard/gfx/font_uLE.c, src/ee/dashboard/gfx/ps2_icon.c, src/ee/dashboard/gfx/icon_cache.c, src/ee/dashboard/gfx/fallback_icons.c, src/ee/dashboard/ui/layout.c, src/ee/dashboard/ui/background.c, src/ee/dashboard/ui/dashboard_ui.c, src/ee/dashboard/config/metadata.c, src/ee/dashboard/theme/theme.c, src/ee/dashboard/log/log.c, src/ee/dashboard/audio/audio.c, src/ee/dashboard/embedded/target_elf.c, src/ee/dashboard/embedded/stage2_elf.c, src/ee/dashboard/embedded/theme_dark_cfg.c, src/ee/dashboard/embedded/theme_sunset_cfg.c, src/ee/dashboard/embedded/sfx_blip_pcm.c, src/ee/dashboard/embedded/music_adpcm.c, src/ee/dashboard/embedded/noto_sans_ttf.c, src/ee/dashboard/embedded/iomanX_irx.c, src/ee/dashboard/embedded/fileXio_irx.c, src/ee/dashboard/embedded/poweroff_irx.c, src/ee/dashboard/embedded/mcman_irx.c, src/ee/dashboard/embedded/mcserv_irx.c, src/ee/dashboard/embedded/usbd_irx.c, src/ee/dashboard/embedded/usbhdfsd_irx.c, src/ee/dashboard/embedded/cdvdman_irx.c, src/ee/dashboard/embedded/cdvdfsv_irx.c, src/ee/dashboard/embedded/ps2dev9_irx.c, src/ee/dashboard/embedded/ps2atad_irx.c, src/ee/dashboard/embedded/netman_irx.c, src/ee/dashboard/embedded/smap_irx.c, src/ee/dashboard/embedded/ps2ips_irx.c, src/ee/dashboard/embedded/smbman_irx.c, src/ee/dashboard/embedded/libsd_irx.c, src/ee/dashboard/embedded/audsrv_irx.c]
+    headers: [common, freetype, patches]
+    libs: [filexio, gskit, dmakit, pad, png, z, poweroff, cdvd, netman, ps2ips, audsrv, freetype, patches]
     pack: true
 
   - name: target
@@ -33,4 +33,9 @@ targets:
       - src/ee/texturetest/embedded/icon_magenta.c
       - src/ee/texturetest/embedded/icon_orange.c
       - src/ee/texturetest/embedded/icon_white.c
-    libs: [debug, filexio, gskit, dmakit, png, z]
+      - src/ee/dashboard/embedded/iomanX_irx.c
+      - src/ee/dashboard/embedded/fileXio_irx.c
+      - src/ee/dashboard/embedded/mcman_irx.c
+      - src/ee/dashboard/embedded/mcserv_irx.c
+    headers: [patches]
+    libs: [debug, filexio, gskit, dmakit, png, z, patches]

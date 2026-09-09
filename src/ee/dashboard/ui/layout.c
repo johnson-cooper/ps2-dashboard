@@ -47,3 +47,28 @@ void layoutTruncateToChars(char *out, int outSize, const char *text, int maxChar
         out[i] = text[i];
     out[len] = '\0';
 }
+
+void layoutTruncateToWidth(char *out, int outSize, const char *text, const BitmapFont *font, float maxWidthPx)
+{
+    int len = 0;
+    float width = 0.0f;
+    const unsigned char *p = (const unsigned char *)text;
+
+    while (p[len] && len < outSize - 1) {
+        unsigned char c = p[len];
+        float advance = 0.0f;
+        if (c >= BITMAP_FONT_FIRST_GLYPH && c < BITMAP_FONT_FIRST_GLYPH + BITMAP_FONT_GLYPH_COUNT)
+            advance = (float)font->glyphs[c - BITMAP_FONT_FIRST_GLYPH].advance;
+
+        if (width + advance > maxWidthPx)
+            break;
+
+        width += advance;
+        len++;
+    }
+
+    int i;
+    for (i = 0; i < len; i++)
+        out[i] = text[i];
+    out[len] = '\0';
+}
